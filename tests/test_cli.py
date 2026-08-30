@@ -1,6 +1,7 @@
 from typer.testing import CliRunner
 
 from book_organizer.cli import app
+from tests.helpers import make_epub
 
 runner = CliRunner()
 
@@ -42,3 +43,32 @@ def test_scan_incremental_and_duplicates(tmp_path):
 
     r2 = runner.invoke(app, ["scan", "--root", str(root)])
     assert "added=0 changed=0" in r2.output
+
+
+def test_extract_sets_metadata_and_states(tmp_path):
+    root = _init_root(tmp_path)
+    make_epub(
+        root / "incoming" / "tbp.epub",
+        title="The Three-Body Problem",
+        author="Liu Cixin",
+        isbn="9780765382030",
+        language="en",
+    )
+    (root / "incoming" / "bad.epub").write_bytes(b"not a zip")
+    runner.invoke(app, ["scan", "--root", str(root)])
+
+    r = runner.invoke(app, ["extract", "--root", str(root)])
+    assert r.exit_code == 0, r.output
+
+    from book_organizer.config import load_config
+    from book_organizer.db.database import Database
+
+    cfg = load_config(root)
+    with Database(cfg.database.path) as db:
+        rows = {r["path"].split("/")[-1]: r for r in db.conn.execute("SELECT * FROM files")}
+    assert rows["tbp.epub"]["status"] == "IDENTIFIED"
+    assert rows["tbp.epub"]["title_raw"] == "The Three-Body Problem"
+    assert rows["tbp.epub"]["author_raw"] == "Liu Cixin"
+    assert rows["tbp.epub"]["isbn_raw"] == "9780765382030"
+    assert rows["tbp.epub"]["language_raw"] == "en"
+    assert rows["bad.epub"]["status"] == "ERROR"

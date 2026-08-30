@@ -5,6 +5,10 @@ import typer
 
 from book_organizer.config import default_config, load_config, save_config
 from book_organizer.db.database import Database
+from book_organizer.extractors.base import ExtractionError
+from book_organizer.extractors.epub import extract_epub
+from book_organizer.extractors.pdf import extract_pdf
+from book_organizer.metadata.isbn import find_isbns
 from book_organizer.scanner.hashing import sha256_file
 from book_organizer.scanner.scanner import iter_files
 
@@ -61,6 +65,45 @@ def scan(
         db.finish_scan_run(run_id, seen, added, changed)
         db.conn.commit()
     typer.echo(f"seen={seen} added={added} changed={changed} duplicates={dups}")
+
+
+_EXTRACTORS = {"epub": extract_epub, "pdf": extract_pdf}
+
+
+@app.command()
+def extract(
+    root: Path = ROOT_OPTION,
+    force: bool = typer.Option(False, "--force", help="Re-extract ERROR/IDENTIFIED files"),
+) -> None:
+    """Extract embedded metadata from scanned files."""
+    cfg = load_config(root)
+    statuses = ["SCANNED"] + (["ERROR", "IDENTIFIED"] if force else [])
+    done = errors = 0
+    with Database(cfg.database.path) as db:
+        rows = [r for s in statuses for r in db.files_with_status(s)]
+        for row in rows:
+            extractor = _EXTRACTORS.get(row["format"])
+            path = Path(row["path"])
+            try:
+                if extractor is None:
+                    raise ExtractionError(f"unsupported format {row['format']}")
+                meta = extractor(path)
+            except ExtractionError:
+                db.set_status(row["id"], "ERROR")
+                errors += 1
+                continue
+            isbns = meta.isbns or find_isbns(path.name)
+            db.set_raw_metadata(
+                row["id"],
+                title=meta.title,
+                author="; ".join(meta.authors) or None,
+                isbn=isbns[0] if isbns else None,
+                language=meta.language,
+            )
+            db.set_status(row["id"], "IDENTIFIED")
+            done += 1
+        db.conn.commit()
+    typer.echo(f"extracted={done} errors={errors}")
 
 
 def main() -> None:
