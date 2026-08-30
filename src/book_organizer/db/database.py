@@ -153,3 +153,74 @@ class Database:
 
     def __exit__(self, *exc) -> None:
         self.close()
+
+    def upsert_file(self, path: str, size: int, mtime: int, fmt: str) -> tuple[int, str]:
+        row = self.conn.execute(
+            "SELECT id, size, mtime FROM files WHERE path=?", (path,)
+        ).fetchone()
+        now = _now()
+        if row is None:
+            cur = self.conn.execute(
+                "INSERT INTO files (path, size, mtime, format, status, created_at, updated_at)"
+                " VALUES (?,?,?,?,'NEW',?,?)",
+                (path, size, mtime, fmt, now, now),
+            )
+            return cur.lastrowid, "new"
+        if (row["size"], row["mtime"]) == (size, mtime):
+            return row["id"], "unchanged"
+        self.conn.execute(
+            "UPDATE files SET size=?, mtime=?, sha256=NULL, status='NEW', updated_at=?"
+            " WHERE id=?",
+            (size, mtime, now, row["id"]),
+        )
+        return row["id"], "changed"
+
+    def set_hash(self, file_id: int, sha256: str) -> bool:
+        dup = self.conn.execute(
+            "SELECT id FROM files WHERE sha256=? AND id != ?", (sha256, file_id)
+        ).fetchone()
+        status = "DUPLICATE" if dup else "SCANNED"
+        self.conn.execute(
+            "UPDATE files SET sha256=?, status=?, updated_at=? WHERE id=?",
+            (sha256, status, _now(), file_id),
+        )
+        return dup is not None
+
+    def set_status(self, file_id: int, status: str) -> None:
+        self.conn.execute(
+            "UPDATE files SET status=?, updated_at=? WHERE id=?",
+            (status, _now(), file_id),
+        )
+
+    def set_raw_metadata(
+        self,
+        file_id: int,
+        title: str | None,
+        author: str | None,
+        isbn: str | None,
+        language: str | None,
+    ) -> None:
+        self.conn.execute(
+            "UPDATE files SET title_raw=?, author_raw=?, isbn_raw=?, language_raw=?,"
+            " updated_at=? WHERE id=?",
+            (title, author, isbn, language, _now(), file_id),
+        )
+
+    def files_with_status(self, status: str) -> list:
+        return self.conn.execute(
+            "SELECT * FROM files WHERE status=? ORDER BY path", (status,)
+        ).fetchall()
+
+    def start_scan_run(self, root: str) -> int:
+        cur = self.conn.execute(
+            "INSERT INTO scan_runs (started_at, root_path) VALUES (?,?)",
+            (_now(), root),
+        )
+        return cur.lastrowid
+
+    def finish_scan_run(self, run_id: int, seen: int, added: int, changed: int) -> None:
+        self.conn.execute(
+            "UPDATE scan_runs SET completed_at=?, files_seen=?, files_added=?,"
+            " files_changed=? WHERE id=?",
+            (_now(), seen, added, changed, run_id),
+        )

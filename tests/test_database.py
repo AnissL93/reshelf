@@ -32,3 +32,49 @@ def test_wal_mode(tmp_path):
     with Database(tmp_path / "db" / "books.sqlite3") as db:
         mode = db.conn.execute("PRAGMA journal_mode").fetchone()[0]
     assert mode == "wal"
+
+
+def _mkdb(tmp_path):
+    db = Database(tmp_path / "db" / "books.sqlite3")
+    db.init_schema()
+    return db
+
+
+def test_upsert_file_lifecycle(tmp_path):
+    with _mkdb(tmp_path) as db:
+        fid, state = db.upsert_file("/x/a.epub", 100, 111, "epub")
+        assert state == "new"
+        assert db.upsert_file("/x/a.epub", 100, 111, "epub") == (fid, "unchanged")
+        fid2, state2 = db.upsert_file("/x/a.epub", 200, 222, "epub")
+        assert (fid2, state2) == (fid, "changed")
+        row = db.conn.execute("SELECT * FROM files WHERE id=?", (fid,)).fetchone()
+        assert row["sha256"] is None and row["status"] == "NEW"
+
+
+def test_set_hash_marks_duplicates(tmp_path):
+    with _mkdb(tmp_path) as db:
+        a, _ = db.upsert_file("/x/a.epub", 1, 1, "epub")
+        b, _ = db.upsert_file("/x/b.epub", 1, 1, "epub")
+        assert db.set_hash(a, "abc") is False
+        assert db.set_hash(b, "abc") is True
+        rows = {r["path"]: r["status"] for r in db.conn.execute("SELECT * FROM files")}
+        assert rows["/x/a.epub"] == "SCANNED"
+        assert rows["/x/b.epub"] == "DUPLICATE"
+
+
+def test_raw_metadata_and_status_queries(tmp_path):
+    with _mkdb(tmp_path) as db:
+        fid, _ = db.upsert_file("/x/a.epub", 1, 1, "epub")
+        db.set_hash(fid, "abc")
+        db.set_raw_metadata(fid, title="三体", author="刘慈欣", isbn="9780765382030", language="zh")
+        db.set_status(fid, "IDENTIFIED")
+        rows = db.files_with_status("IDENTIFIED")
+        assert len(rows) == 1 and rows[0]["title_raw"] == "三体"
+
+
+def test_scan_runs(tmp_path):
+    with _mkdb(tmp_path) as db:
+        rid = db.start_scan_run("/x")
+        db.finish_scan_run(rid, seen=3, added=2, changed=1)
+        row = db.conn.execute("SELECT * FROM scan_runs WHERE id=?", (rid,)).fetchone()
+        assert row["files_seen"] == 3 and row["completed_at"] is not None
