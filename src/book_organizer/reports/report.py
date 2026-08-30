@@ -8,10 +8,11 @@ def build_report(db: Database) -> dict:
     return {
         "files_scanned": one("SELECT COUNT(*) FROM files"),
         "exact_isbn_matches": one(
-            "SELECT COUNT(*) FROM matches WHERE evidence_json LIKE '%\"exact_isbn\"%'"
+            "SELECT COUNT(DISTINCT file_id) FROM matches"
+            " WHERE evidence_json LIKE '%\"exact_isbn\"%'"
         ),
         "high_confidence": one(
-            "SELECT COUNT(*) FROM matches WHERE status IN"
+            "SELECT COUNT(DISTINCT file_id) FROM matches WHERE status IN"
             " ('AUTO_ACCEPT','HIGH_CONFIDENCE')"
             " AND evidence_json NOT LIKE '%\"exact_isbn\"%'"
         ),
