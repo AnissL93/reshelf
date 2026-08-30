@@ -1,7 +1,10 @@
+import json
 import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+
+from book_organizer.metadata.models import Candidate
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
@@ -223,4 +226,90 @@ class Database:
             "UPDATE scan_runs SET completed_at=?, files_seen=?, files_added=?,"
             " files_changed=? WHERE id=?",
             (_now(), seen, added, changed, run_id),
+        )
+
+    def save_candidate(self, cand: Candidate) -> int:
+        e = cand.edition
+        w = e.work
+        row = self.conn.execute(
+            "SELECT id FROM works WHERE canonical_title=?", (w.title,)
+        ).fetchone()
+        if row:
+            work_id = row["id"]
+        else:
+            work_id = self.conn.execute(
+                "INSERT INTO works (canonical_title, original_title, original_language)"
+                " VALUES (?,?,?)",
+                (w.title, w.original_title, w.original_language),
+            ).lastrowid
+        for a in w.authors:
+            arow = self.conn.execute(
+                "SELECT id FROM authors WHERE canonical_name=?", (a.name,)
+            ).fetchone()
+            author_id = (
+                arow["id"]
+                if arow
+                else self.conn.execute(
+                    "INSERT INTO authors (canonical_name) VALUES (?)", (a.name,)
+                ).lastrowid
+            )
+            self.conn.execute(
+                "INSERT OR IGNORE INTO work_authors (work_id, author_id) VALUES (?,?)",
+                (work_id, author_id),
+            )
+        erow = None
+        if e.isbn13:
+            erow = self.conn.execute(
+                "SELECT id FROM editions WHERE isbn13=?", (e.isbn13,)
+            ).fetchone()
+        if erow:
+            edition_id = erow["id"]
+        else:
+            edition_id = self.conn.execute(
+                "INSERT INTO editions (work_id, isbn10, isbn13, publisher,"
+                " publication_date, language, edition_name) VALUES (?,?,?,?,?,?,?)",
+                (work_id, e.isbn10, e.isbn13, e.publisher, e.publication_date,
+                 e.language, e.edition_name),
+            ).lastrowid
+        if e.isbn13:
+            self.conn.execute(
+                "INSERT OR IGNORE INTO identifiers (edition_id, type, value, source)"
+                " VALUES (?,'isbn13',?,?)",
+                (edition_id, e.isbn13, cand.provider),
+            )
+        self.conn.execute(
+            "INSERT OR IGNORE INTO metadata_sources (edition_id, provider,"
+            " provider_id, retrieved_at) VALUES (?,?,?,?)",
+            (edition_id, cand.provider, cand.provider_id, _now()),
+        )
+        return edition_id
+
+    def record_match(
+        self,
+        file_id: int,
+        edition_id: int,
+        score: float,
+        confidence: float,
+        resolver: str,
+        evidence: list[str],
+        band: str,
+    ) -> None:
+        self.conn.execute(
+            "INSERT INTO matches (file_id, edition_id, score, confidence, resolver,"
+            " evidence_json, status, created_at) VALUES (?,?,?,?,?,?,?,?)",
+            (file_id, edition_id, score, confidence, resolver,
+             json.dumps(evidence), band, _now()),
+        )
+
+    def set_file_match(
+        self,
+        file_id: int,
+        edition_id: int | None,
+        confidence: float,
+        status: str,
+    ) -> None:
+        self.conn.execute(
+            "UPDATE files SET matched_edition_id=?, match_confidence=?, status=?,"
+            " updated_at=? WHERE id=?",
+            (edition_id, confidence, status, _now(), file_id),
         )

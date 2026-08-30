@@ -78,3 +78,45 @@ def test_scan_runs(tmp_path):
         db.finish_scan_run(rid, seen=3, added=2, changed=1)
         row = db.conn.execute("SELECT * FROM scan_runs WHERE id=?", (rid,)).fetchone()
         assert row["files_seen"] == 3 and row["completed_at"] is not None
+
+
+from book_organizer.metadata.models import Author, Candidate, Edition, Work  # noqa: E402
+
+
+def _tbp_candidate():
+    return Candidate(
+        provider="openlibrary",
+        provider_id="/books/OL26831316M",
+        edition=Edition(
+            work=Work(title="The Three-Body Problem", authors=[Author(name="Liu Cixin")]),
+            isbn13="9780765382030",
+            publisher="Tor Books",
+            publication_date="2014",
+        ),
+    )
+
+
+def test_save_candidate_dedupes(tmp_path):
+    with _mkdb(tmp_path) as db:
+        e1 = db.save_candidate(_tbp_candidate())
+        e2 = db.save_candidate(_tbp_candidate())
+        assert e1 == e2
+        assert db.conn.execute("SELECT COUNT(*) c FROM works").fetchone()["c"] == 1
+        assert db.conn.execute("SELECT COUNT(*) c FROM authors").fetchone()["c"] == 1
+        ident = db.conn.execute("SELECT * FROM identifiers").fetchone()
+        assert (ident["type"], ident["value"]) == ("isbn13", "9780765382030")
+        src = db.conn.execute("SELECT * FROM metadata_sources").fetchone()
+        assert src["provider"] == "openlibrary" and src["edition_id"] == e1
+
+
+def test_record_match_and_file_link(tmp_path):
+    with _mkdb(tmp_path) as db:
+        fid, _ = db.upsert_file("/x/a.epub", 1, 1, "epub")
+        eid = db.save_candidate(_tbp_candidate())
+        db.record_match(fid, eid, 140.0, 0.99, "deterministic",
+                        ["exact_isbn", "exact_title"], "AUTO_ACCEPT")
+        db.set_file_match(fid, eid, 0.99, "MATCHED")
+        m = db.conn.execute("SELECT * FROM matches").fetchone()
+        assert m["status"] == "AUTO_ACCEPT" and '"exact_isbn"' in m["evidence_json"]
+        f = db.conn.execute("SELECT * FROM files WHERE id=?", (fid,)).fetchone()
+        assert f["matched_edition_id"] == eid and f["status"] == "MATCHED"
