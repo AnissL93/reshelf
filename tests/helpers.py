@@ -29,7 +29,7 @@ def make_epub(path, title, author, isbn=None, language="en", publisher=None):
 
 
 def make_pdf(path, title, author, text=None):
-    import fitz
+    import pymupdf as fitz
 
     doc = fitz.open()
     page = doc.new_page()

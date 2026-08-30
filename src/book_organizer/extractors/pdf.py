@@ -1,6 +1,6 @@
 from pathlib import Path
 
-import fitz
+import pymupdf as fitz
 
 from book_organizer.extractors.base import ExtractedMetadata, ExtractionError
 from book_organizer.metadata.isbn import find_isbns
