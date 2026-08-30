@@ -2,3 +2,12 @@
 __pycache__/
 *.egg-info/
 .pytest_cache/
+incoming/
+library/
+quarantine/
+duplicates/
+covers/
+cache/
+reports/
+db/
+config.yaml
