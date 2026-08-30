@@ -96,7 +96,7 @@ def score_candidate(local: LocalBook, cand: Candidate) -> tuple[float, list[str]
 def confidence_from_score(score: float, evidence: list[str]) -> float:
     if "exact_isbn" in evidence and not any(e.startswith("conflict:") for e in evidence):
         return 0.99
-    conf = max(0.0, min(score / 150, 1.0))
+    conf = max(0.0, min(score / 100, 1.0))
     if "conflict:isbn" in evidence:
         conf = min(conf, 0.40)
     return conf

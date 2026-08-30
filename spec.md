@@ -701,8 +701,14 @@ year difference > 20            -10
 Score is mapped to confidence by an explicit, tunable function. Initial policy:
 
 ```text
-confidence = clamp(score / 150, 0.0, 1.0)
+confidence = clamp(score / 100, 0.0, 1.0)
 ```
+
+The divisor is chosen so the maximum non-ISBN evidence stack (exact
+title 40 + exact author 30 + language 10 + publisher 8 + year 7 = 95)
+can reach HIGH_CONFIDENCE; a mapping that caps ISBN-less matches below
+the review threshold would force every book without an identifier into
+manual review.
 
 Overrides:
 
