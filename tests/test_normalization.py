@@ -28,6 +28,27 @@ def test_title_from_filename_plain():
     assert title_from_filename("Basic topology") == "Basic topology"
 
 
+def test_short_title():
+    from book_organizer.metadata.normalization import short_title
+
+    assert (
+        short_title("The Cultural Revolution: A People's History, 1962-1976")
+        == "The Cultural Revolution"
+    )
+    assert short_title("一口气读完的人体秘密（套装共3册）") == "一口气读完的人体秘密"
+    assert short_title("《周易梅花数》诠译") == "《周易梅花数》诠译"
+    assert short_title("Dune") == "Dune"
+
+
+def test_search_author():
+    from book_organizer.metadata.normalization import search_author
+
+    assert search_author("（美）MATTHEW MCKAY，JEFFREY C.WOOD著") == "MATTHEW MCKAY"
+    assert search_author("加文·弗朗西斯; 悉达多•穆克吉") == "加文·弗朗西斯"
+    assert search_author("Frank Dikötter") == "Frank Dikötter"
+    assert search_author("（美）") is None
+
+
 def test_title_spec_example():
     assert normalize_title("The Three-Body Problem: A Novel") == "three body problem"
 

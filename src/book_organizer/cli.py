@@ -24,7 +24,11 @@ from book_organizer.extractors.base import ExtractionError
 from book_organizer.extractors.epub import extract_epub
 from book_organizer.extractors.pdf import extract_pdf
 from book_organizer.metadata.isbn import find_isbns
-from book_organizer.metadata.normalization import title_from_filename
+from book_organizer.metadata.normalization import (
+    search_author,
+    short_title,
+    title_from_filename,
+)
 from book_organizer.scanner.hashing import sha256_file
 from book_organizer.scanner.scanner import iter_files
 
@@ -142,9 +146,11 @@ def _match_file(db, provider, mcfg, row) -> str:
     for isbn in local.isbn13s:
         candidates += provider.lookup_isbn(isbn)
     if not candidates and local.title:
-        candidates += provider.search(
-            local.title, local.authors[0] if local.authors else None
-        )
+        title_q = short_title(local.title)
+        author_q = search_author(local.authors[0]) if local.authors else None
+        candidates += provider.search(title_q, author_q)
+        if not candidates and author_q:
+            candidates += provider.search(title_q)
     for cand in candidates:
         cand.score, cand.evidence = score_candidate(local, cand)
         cand.confidence = confidence_from_score(cand.score, cand.evidence)

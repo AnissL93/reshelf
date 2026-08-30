@@ -30,6 +30,23 @@ def title_from_filename(stem: str) -> str:
     return s or stem
 
 
+def short_title(s: str) -> str:
+    """Main title for provider search: cut subtitles and bracketed suffixes."""
+    head = re.split(r"[:：(（【\[]", s, 1)[0].strip(" -_.")
+    return head or s
+
+
+def search_author(s: str | None) -> str | None:
+    """First author, stripped of bracketed tags and 著/译/编 suffixes, for search."""
+    if not s:
+        return None
+    s = re.sub(r"[（(【\[].*?[）)】\]]", " ", s)
+    s = re.split(r"[;；,，/]", s)[0]
+    s = re.sub(r"\s*(著|译|编著|编|主编|等)\s*$", "", s.strip())
+    s = re.sub(r"\s+", " ", s).strip()
+    return s or None
+
+
 def normalize_title(s: str | None) -> str:
     s = unicodedata.normalize("NFKC", s or "")
     if ":" in s:
