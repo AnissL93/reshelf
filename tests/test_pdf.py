@@ -29,3 +29,20 @@ def test_broken_pdf_raises(tmp_path):
     p.write_bytes(b"not a pdf")
     with pytest.raises(ExtractionError):
         extract_pdf(p)
+
+
+def test_password_protected_pdf_raises(tmp_path):
+    import pymupdf
+
+    doc = pymupdf.open()
+    doc.new_page()
+    p = tmp_path / "locked.pdf"
+    doc.save(
+        str(p),
+        encryption=pymupdf.PDF_ENCRYPT_AES_256,
+        user_pw="secret",
+        owner_pw="secret",
+    )
+    doc.close()
+    with pytest.raises(ExtractionError):
+        extract_pdf(p)

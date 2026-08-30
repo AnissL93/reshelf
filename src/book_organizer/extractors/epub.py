@@ -18,7 +18,9 @@ def extract_epub(path: Path) -> ExtractedMetadata:
             if rootfile is None:
                 raise ExtractionError("no rootfile in container.xml")
             opf = ET.fromstring(z.read(rootfile.attrib["full-path"]))
-    except (zipfile.BadZipFile, KeyError, ET.ParseError, OSError) as e:
+    except ExtractionError:
+        raise
+    except Exception as e:  # bad zips, malformed XML, missing entries, ...
         raise ExtractionError(str(e)) from e
 
     md = opf.find(f"{_OPF_NS}metadata")

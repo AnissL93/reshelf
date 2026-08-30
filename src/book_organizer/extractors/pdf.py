@@ -14,6 +14,8 @@ def extract_pdf(path: Path) -> ExtractedMetadata:
     except Exception as e:  # fitz raises several undocumented types
         raise ExtractionError(str(e)) from e
     try:
+        if doc.is_encrypted and not doc.authenticate(""):
+            raise ExtractionError("password-protected PDF")
         meta = doc.metadata or {}
         text_parts = [
             meta.get("title") or "",
@@ -29,5 +31,9 @@ def extract_pdf(path: Path) -> ExtractedMetadata:
             isbns=find_isbns(" ".join(text_parts)),
             date=(meta.get("creationDate") or "").strip() or None,
         )
+    except ExtractionError:
+        raise
+    except Exception as e:  # corrupt page trees, bad xrefs, ...
+        raise ExtractionError(str(e)) from e
     finally:
         doc.close()
