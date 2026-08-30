@@ -64,12 +64,17 @@ class DoubanProvider(MetadataProvider):
         )
 
     def lookup_isbn(self, isbn: str) -> list[Candidate]:
-        data = self._get(
-            f"isbn:{isbn}",
-            f"{API}/book/isbn/{isbn}",
-            {"apikey": self.apikey},
-            headers=_HEADERS,
-        )
+        try:
+            data = self._get(
+                f"isbn:{isbn}",
+                f"{API}/book/isbn/{isbn}",
+                {"apikey": self.apikey},
+                headers=_HEADERS,
+            )
+        except httpx.HTTPStatusError as e:
+            if e.response is not None and e.response.status_code == 404:
+                return []  # douban simply doesn't know this ISBN
+            raise
         if not data or not data.get("title"):
             return []
         return [self._candidate(data)]

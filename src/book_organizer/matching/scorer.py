@@ -8,6 +8,7 @@ from book_organizer.metadata.models import Candidate
 from book_organizer.metadata.normalization import (
     normalize_author,
     normalize_title,
+    search_author,
     short_title,
 )
 
@@ -24,6 +25,30 @@ class LocalBook:
     language: str | None = None
     publisher: str | None = None
     year: str | None = None
+
+
+def _author_variants(name: str) -> set[str]:
+    out = set()
+    for v in (name, search_author(name) or ""):
+        nv = normalize_author(v)
+        if nv:
+            out.add(nv)
+    return out
+
+
+def _author_similarity(local_authors: list[str], cand_authors: list[str]) -> float:
+    """Max similarity across annotation/translation variants of each name."""
+    best = 0.0
+    for x in local_authors:
+        for y in cand_authors:
+            for vx in _author_variants(x):
+                for vy in _author_variants(y):
+                    if vx == vy:
+                        return 1.0
+                    if len(vx) >= 2 and len(vy) >= 2 and (vx in vy or vy in vx):
+                        best = max(best, 0.95)
+                    best = max(best, fuzz.token_sort_ratio(vx, vy) / 100)
+    return best
 
 
 def _year(date: str | None) -> int | None:
@@ -58,10 +83,9 @@ def score_candidate(local: LocalBook, cand: Candidate) -> tuple[float, list[str]
                 score += 25
                 ev.append("title_sim>=0.85")
 
-    la = [normalize_author(a) for a in local.authors]
-    ca = [normalize_author(a.name) for a in e.work.authors]
+    la, ca = local.authors, [a.name for a in e.work.authors]
     if la and ca:
-        best = max(fuzz.token_sort_ratio(x, y) / 100 for x in la for y in ca)
+        best = _author_similarity(la, ca)
         if best == 1.0:
             score += 30
             ev.append("exact_author")
@@ -117,6 +141,8 @@ def confidence_from_score(score: float, evidence: list[str]) -> float:
     if not any(e.startswith("conflict:") for e in evidence):
         if "exact_title" in evidence and "exact_author" in evidence:
             conf = max(conf, 0.90)  # work-level identity
+        elif "exact_title" in evidence:
+            conf = max(conf, 0.50)  # weak but worth human review
     if "conflict:isbn" in evidence:
         conf = min(conf, 0.40)
     return conf

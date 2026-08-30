@@ -81,6 +81,25 @@ def test_marketing_subtitle_still_exact_title():
     assert "exact_title" in ev and "exact_author" in ev
 
 
+def test_author_variants_not_conflict():
+    # translated-name and annotation variants of the same person must not
+    # register as a conflict
+    local = LocalBook(title="鲁滨孙历险记", authors=["丹尼尔·笛福(Daniel Defoe)"])
+    score, ev = score_candidate(local, _cand(title="鲁滨孙历险记", author="[英] 笛福"))
+    assert "conflict:author" not in ev
+    assert any(e.startswith(("exact_author", "author_sim")) for e in ev)
+
+    local2 = LocalBook(title="黄帝内经", authors=["紫图/编绘"])
+    _, ev2 = score_candidate(local2, _cand(title="黄帝内经", author="紫图"))
+    assert "conflict:author" not in ev2
+
+
+def test_exact_title_only_reaches_review():
+    # a lone exact title (no author metadata at all) is weak but reviewable
+    assert confidence_from_score(40, ["exact_title"]) >= 0.50
+    assert confidence_from_score(10, ["exact_title", "conflict:author"]) < 0.50
+
+
 def test_same_work():
     from book_organizer.matching.scorer import same_work
 

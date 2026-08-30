@@ -99,3 +99,11 @@ def test_offline_mode(tmp_path):
     provider = DoubanProvider(client=None, cache=FileCache(tmp_path))
     assert provider.lookup_isbn("9787536692930") == []
     assert provider.search("三体") == []
+
+
+def test_lookup_isbn_404_means_no_result():
+    def handler(request):
+        return httpx.Response(404)
+
+    provider = DoubanProvider(client=_client(handler), min_interval=0, backoff=0)
+    assert provider.lookup_isbn("9789070967017") == []
