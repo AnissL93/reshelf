@@ -15,6 +15,7 @@ from book_organizer.matching.scorer import (
     confidence_from_score,
     score_candidate,
 )
+from book_organizer.planner.planner import generate_plan
 from book_organizer.providers.cache import FileCache
 from book_organizer.providers.openlibrary import OpenLibraryProvider
 from book_organizer.reports.report import build_report
@@ -220,6 +221,16 @@ def report(
     for key, value in rep.items():
         table.add_row(key.replace("_", " "), f"{value:,}")
     Console().print(table)
+
+
+@app.command()
+def plan(root: Path = ROOT_OPTION) -> None:
+    """Generate a reviewable dry-run plan (writes reports/plan-*.json only)."""
+    cfg = load_config(root)
+    with Database(cfg.database.path) as db:
+        out = generate_plan(db, cfg.library.root / "reports")
+        n = len(_json.loads(out.read_text())["actions"])
+    typer.echo(f"plan written: {out} ({n} actions). No files were modified.")
 
 
 def main() -> None:
