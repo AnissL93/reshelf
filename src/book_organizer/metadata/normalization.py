@@ -13,6 +13,23 @@ _LANG_MAP = {
 }
 
 
+def clean_text(s: str | None) -> str | None:
+    """Strip control characters and collapse whitespace; None if nothing left."""
+    if s is None:
+        return None
+    s = re.sub(r"[\x00-\x1f\x7f]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s or None
+
+
+def title_from_filename(stem: str) -> str:
+    """Best-effort title from a filename stem (Z-Library / Anna's Archive junk)."""
+    s = stem.split(" -- ")[0]
+    s = re.sub(r"\([^()]*\)", " ", s)  # drop parenthesized authors/site tags
+    s = re.sub(r"\s+", " ", s).strip(" -_.")
+    return s or stem
+
+
 def normalize_title(s: str | None) -> str:
     s = unicodedata.normalize("NFKC", s or "")
     if ":" in s:

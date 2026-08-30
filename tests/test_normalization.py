@@ -1,8 +1,31 @@
 from book_organizer.metadata.normalization import (
+    clean_text,
     normalize_author,
     normalize_language,
     normalize_title,
+    title_from_filename,
 )
+
+
+def test_clean_text_strips_control_chars():
+    assert clean_text("The Cultural Revolution\x00") == "The Cultural Revolution"
+    assert clean_text("a\x00b\x1fc\td") == "a b c d"
+    assert clean_text("  \x00 ") is None
+    assert clean_text(None) is None
+
+
+def test_title_from_filename_annas_archive():
+    stem = "佐藤可士和的超整理术 -- 佐藤可士和 -- 2009 -- 江苏美术出版社 -- 7534427908 -- 311815d"
+    assert title_from_filename(stem) == "佐藤可士和的超整理术"
+
+
+def test_title_from_filename_zlibrary():
+    stem = "衍射、傅里叶光学及成像 (埃尔索伊) (Z-Library)"
+    assert title_from_filename(stem) == "衍射、傅里叶光学及成像"
+
+
+def test_title_from_filename_plain():
+    assert title_from_filename("Basic topology") == "Basic topology"
 
 
 def test_title_spec_example():

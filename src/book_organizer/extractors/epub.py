@@ -4,7 +4,7 @@ from pathlib import Path
 
 from book_organizer.extractors.base import ExtractedMetadata, ExtractionError
 from book_organizer.metadata.isbn import find_isbns
-from book_organizer.metadata.normalization import normalize_language
+from book_organizer.metadata.normalization import clean_text, normalize_language
 
 _CONTAINER_NS = "{urn:oasis:names:tc:opendocument:xmlns:container}"
 _OPF_NS = "{http://www.idpf.org/2007/opf}"
@@ -28,11 +28,13 @@ def extract_epub(path: Path) -> ExtractedMetadata:
         raise ExtractionError("no metadata element in OPF")
 
     def dc(name: str) -> list[str]:
-        return [
-            el.text.strip()
-            for el in md
-            if el.tag.endswith("}" + name) and el.text and el.text.strip()
-        ]
+        out = []
+        for el in md:
+            if el.tag.endswith("}" + name):
+                text = clean_text(el.text)
+                if text:
+                    out.append(text)
+        return out
 
     isbns: list[str] = []
     for ident in dc("identifier") + dc("source"):

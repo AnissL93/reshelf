@@ -24,6 +24,7 @@ from book_organizer.extractors.base import ExtractionError
 from book_organizer.extractors.epub import extract_epub
 from book_organizer.extractors.pdf import extract_pdf
 from book_organizer.metadata.isbn import find_isbns
+from book_organizer.metadata.normalization import title_from_filename
 from book_organizer.scanner.hashing import sha256_file
 from book_organizer.scanner.scanner import iter_files
 
@@ -132,7 +133,7 @@ _BAND_TO_STATUS = {
 
 def _match_file(db, provider, mcfg, row) -> str:
     local = LocalBook(
-        title=row["title_raw"] or Path(row["path"]).stem,
+        title=row["title_raw"] or title_from_filename(Path(row["path"]).stem),
         authors=[a.strip() for a in (row["author_raw"] or "").split(";") if a.strip()],
         isbn13s=[row["isbn_raw"]] if row["isbn_raw"] else [],
         language=row["language_raw"],

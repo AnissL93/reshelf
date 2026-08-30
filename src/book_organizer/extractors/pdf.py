@@ -4,6 +4,7 @@ import pymupdf as fitz
 
 from book_organizer.extractors.base import ExtractedMetadata, ExtractionError
 from book_organizer.metadata.isbn import find_isbns
+from book_organizer.metadata.normalization import clean_text
 
 _ISBN_SCAN_PAGES = 5
 
@@ -24,12 +25,12 @@ def extract_pdf(path: Path) -> ExtractedMetadata:
         ]
         for page in doc.pages(0, min(doc.page_count, _ISBN_SCAN_PAGES)):
             text_parts.append(page.get_text())
-        author = (meta.get("author") or "").strip()
+        author = clean_text(meta.get("author"))
         return ExtractedMetadata(
-            title=(meta.get("title") or "").strip() or None,
+            title=clean_text(meta.get("title")),
             authors=[author] if author else [],
             isbns=find_isbns(" ".join(text_parts)),
-            date=(meta.get("creationDate") or "").strip() or None,
+            date=clean_text(meta.get("creationDate")),
         )
     except ExtractionError:
         raise
