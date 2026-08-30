@@ -1,9 +1,19 @@
 from pathlib import Path
 from typing import Optional
 
+import httpx
 import typer
 
+from book_organizer import __version__
 from book_organizer.config import default_config, load_config, save_config
+from book_organizer.matching.scorer import (
+    LocalBook,
+    band,
+    confidence_from_score,
+    score_candidate,
+)
+from book_organizer.providers.cache import FileCache
+from book_organizer.providers.openlibrary import OpenLibraryProvider
 from book_organizer.db.database import Database
 from book_organizer.extractors.base import ExtractionError
 from book_organizer.extractors.epub import extract_epub
@@ -104,6 +114,88 @@ def extract(
             done += 1
         db.conn.commit()
     typer.echo(f"extracted={done} errors={errors}")
+
+
+_BAND_TO_STATUS = {
+    "AUTO_ACCEPT": "MATCHED",
+    "HIGH_CONFIDENCE": "MATCHED",
+    "REVIEW_RECOMMENDED": "REVIEW",
+    "AI_RESOLUTION": "REVIEW",
+    "UNRESOLVED": "UNRESOLVED",
+}
+
+
+def _match_file(db, provider, mcfg, row) -> str:
+    local = LocalBook(
+        title=row["title_raw"] or Path(row["path"]).stem,
+        authors=[a.strip() for a in (row["author_raw"] or "").split(";") if a.strip()],
+        isbn13s=[row["isbn_raw"]] if row["isbn_raw"] else [],
+        language=row["language_raw"],
+    )
+    candidates = []
+    for isbn in local.isbn13s:
+        candidates += provider.lookup_isbn(isbn)
+    if not candidates and local.title:
+        candidates += provider.search(
+            local.title, local.authors[0] if local.authors else None
+        )
+    for cand in candidates:
+        cand.score, cand.evidence = score_candidate(local, cand)
+        cand.confidence = confidence_from_score(cand.score, cand.evidence)
+    candidates.sort(key=lambda c: c.score, reverse=True)
+    if not candidates:
+        db.set_status(row["id"], "UNRESOLVED")
+        return "UNRESOLVED"
+    best = candidates[0]
+    b = band(best.confidence, mcfg)
+    if (
+        len(candidates) > 1
+        and best.score - candidates[1].score < 10
+        and b in ("AUTO_ACCEPT", "HIGH_CONFIDENCE")
+    ):
+        b = "REVIEW_RECOMMENDED"
+        best.evidence.append("ambiguous:tie")
+    edition_id = db.save_candidate(best)
+    db.record_match(
+        row["id"], edition_id, best.score, best.confidence,
+        "deterministic", best.evidence, b,
+    )
+    status = _BAND_TO_STATUS[b]
+    db.set_file_match(
+        row["id"],
+        edition_id if status == "MATCHED" else None,
+        best.confidence,
+        status,
+    )
+    return status
+
+
+@app.command()
+def match(
+    root: Path = ROOT_OPTION,
+    offline: bool = typer.Option(False, "--offline", help="Use only the local cache"),
+) -> None:
+    """Match identified files against Open Library."""
+    cfg = load_config(root)
+    if not cfg.providers.openlibrary.enabled:
+        typer.echo("openlibrary provider disabled in config", err=True)
+        raise typer.Exit(1)
+    cache = FileCache(cfg.library.root / "cache" / "openlibrary", cfg.cache.ttl_days)
+    client = None if offline else httpx.Client(
+        headers={"User-Agent": f"book-organizer/{__version__}"}
+    )
+    provider = OpenLibraryProvider(client=client, cache=cache)
+    counts: dict[str, int] = {}
+    try:
+        with Database(cfg.database.path) as db:
+            for row in db.files_with_status("IDENTIFIED"):
+                status = _match_file(db, provider, cfg.matching, row)
+                counts[status] = counts.get(status, 0) + 1
+                db.conn.commit()
+    finally:
+        if client is not None:
+            client.close()
+    typer.echo(" ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "nothing to match")
 
 
 def main() -> None:

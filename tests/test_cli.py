@@ -72,3 +72,49 @@ def test_extract_sets_metadata_and_states(tmp_path):
     assert rows["tbp.epub"]["isbn_raw"] == "9780765382030"
     assert rows["tbp.epub"]["language_raw"] == "en"
     assert rows["bad.epub"]["status"] == "ERROR"
+
+
+OL_ISBN_RESPONSE = {
+    "ISBN:9780765382030": {
+        "key": "/books/OL26831316M",
+        "title": "The Three-Body Problem",
+        "authors": [{"name": "Liu Cixin"}],
+        "publishers": [{"name": "Tor Books"}],
+        "publish_date": "2014",
+        "identifiers": {"isbn_13": ["9780765382030"]},
+    }
+}
+
+
+def test_match_offline_with_seeded_cache(tmp_path):
+    from book_organizer.config import load_config
+    from book_organizer.db.database import Database
+    from book_organizer.providers.cache import FileCache
+
+    root = _init_root(tmp_path)
+    make_epub(
+        root / "incoming" / "tbp.epub",
+        title="The Three-Body Problem",
+        author="Liu Cixin",
+        isbn="9780765382030",
+        language="en",
+    )
+    make_epub(root / "incoming" / "mystery.epub", title="zzz no such book qqq",
+              author="Nobody")
+    runner.invoke(app, ["scan", "--root", str(root)])
+    runner.invoke(app, ["extract", "--root", str(root)])
+
+    FileCache(root / "cache" / "openlibrary").put(
+        "isbn:9780765382030", OL_ISBN_RESPONSE
+    )
+    r = runner.invoke(app, ["match", "--root", str(root), "--offline"])
+    assert r.exit_code == 0, r.output
+
+    cfg = load_config(root)
+    with Database(cfg.database.path) as db:
+        rows = {r["path"].split("/")[-1]: r for r in db.conn.execute("SELECT * FROM files")}
+        assert rows["tbp.epub"]["status"] == "MATCHED"
+        assert rows["tbp.epub"]["match_confidence"] == 0.99
+        assert rows["mystery.epub"]["status"] == "UNRESOLVED"
+        m = db.conn.execute("SELECT * FROM matches").fetchone()
+        assert m["status"] == "AUTO_ACCEPT" and m["resolver"] == "deterministic"
