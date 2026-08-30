@@ -1,8 +1,11 @@
+import json as _json
 from pathlib import Path
 from typing import Optional
 
 import httpx
 import typer
+from rich.console import Console
+from rich.table import Table
 
 from book_organizer import __version__
 from book_organizer.config import default_config, load_config, save_config
@@ -14,6 +17,7 @@ from book_organizer.matching.scorer import (
 )
 from book_organizer.providers.cache import FileCache
 from book_organizer.providers.openlibrary import OpenLibraryProvider
+from book_organizer.reports.report import build_report
 from book_organizer.db.database import Database
 from book_organizer.extractors.base import ExtractionError
 from book_organizer.extractors.epub import extract_epub
@@ -196,6 +200,26 @@ def match(
         if client is not None:
             client.close()
     typer.echo(" ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "nothing to match")
+
+
+@app.command()
+def report(
+    root: Path = ROOT_OPTION,
+    as_json: bool = typer.Option(False, "--json", help="Print raw JSON"),
+) -> None:
+    """Summarize library processing state."""
+    cfg = load_config(root)
+    with Database(cfg.database.path) as db:
+        rep = build_report(db)
+    if as_json:
+        typer.echo(_json.dumps(rep, indent=2))
+        return
+    table = Table(title="book-organizer report")
+    table.add_column("Metric")
+    table.add_column("Count", justify="right")
+    for key, value in rep.items():
+        table.add_row(key.replace("_", " "), f"{value:,}")
+    Console().print(table)
 
 
 def main() -> None:
