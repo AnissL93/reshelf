@@ -26,3 +26,16 @@ def make_epub(path, title, author, isbn=None, language="en", publisher=None):
         z.writestr("META-INF/container.xml", CONTAINER)
         z.writestr("content.opf", opf)
     return path
+
+
+def make_pdf(path, title, author, text=None):
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page()
+    if text:
+        page.insert_text((72, 72), text)
+    doc.set_metadata({"title": title, "author": author})
+    doc.save(str(path))
+    doc.close()
+    return path
