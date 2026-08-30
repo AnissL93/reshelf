@@ -193,10 +193,22 @@ def match(
     counts: dict[str, int] = {}
     try:
         with Database(cfg.database.path) as db:
-            for row in db.files_with_status("IDENTIFIED"):
-                status = _match_file(db, provider, cfg.matching, row)
+            rows = db.files_with_status("IDENTIFIED")
+            total = len(rows)
+            for i, row in enumerate(rows, 1):
+                try:
+                    status = _match_file(db, provider, cfg.matching, row)
+                except httpx.HTTPError as e:
+                    # leave the file IDENTIFIED so a later run retries it
+                    status = "NETWORK_ERROR"
+                    typer.echo(f"network error on {row['path']}: {e}", err=True)
                 counts[status] = counts.get(status, 0) + 1
                 db.conn.commit()
+                if i % 25 == 0 or i == total:
+                    typer.echo(
+                        f"[{i}/{total}] "
+                        + " ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+                    )
     finally:
         if client is not None:
             client.close()

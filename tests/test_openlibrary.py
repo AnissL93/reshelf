@@ -1,4 +1,5 @@
 import httpx
+import pytest
 
 from book_organizer.providers.cache import FileCache
 from book_organizer.providers.openlibrary import OpenLibraryProvider
@@ -78,3 +79,30 @@ def test_cache_hit_avoids_network(tmp_path):
 def test_offline_mode(tmp_path):
     provider = OpenLibraryProvider(client=None, cache=FileCache(tmp_path))
     assert provider.lookup_isbn("9780765382030") == []
+
+
+def test_retries_on_server_error():
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        if len(calls) < 3:
+            return httpx.Response(500)
+        return httpx.Response(200, json=ISBN_RESPONSE)
+
+    provider = OpenLibraryProvider(
+        client=_client(handler), min_interval=0, backoff=0
+    )
+    [cand] = provider.lookup_isbn("9780765382030")
+    assert len(calls) == 3 and cand.edition.isbn13 == "9780765382030"
+
+
+def test_gives_up_after_max_retries():
+    def handler(request):
+        return httpx.Response(500)
+
+    provider = OpenLibraryProvider(
+        client=_client(handler), min_interval=0, backoff=0
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        provider.lookup_isbn("9780765382030")
