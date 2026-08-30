@@ -713,6 +713,8 @@ manual review.
 Overrides:
 
 * valid exact ISBN match with no negative evidence → confidence = 0.99
+* exact title AND exact author with no negative evidence → confidence at
+  least 0.90 (work-level identity)
 * any ISBN conflict → confidence capped at 0.40
 
 Tie-breaking: if the top two candidates score within 10 points of each other, the match is ambiguous regardless of absolute score and is routed to AI_RESOLUTION (or REVIEW when AI is disabled).

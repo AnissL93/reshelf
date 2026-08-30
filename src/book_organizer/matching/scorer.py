@@ -5,7 +5,15 @@ from rapidfuzz import fuzz
 
 from book_organizer.config import MatchingConfig
 from book_organizer.metadata.models import Candidate
-from book_organizer.metadata.normalization import normalize_author, normalize_title
+from book_organizer.metadata.normalization import (
+    normalize_author,
+    normalize_title,
+    short_title,
+)
+
+
+def _norm_title(s: str | None) -> str:
+    return normalize_title(short_title(s) if s else s)
 
 
 @dataclass
@@ -36,7 +44,7 @@ def score_candidate(local: LocalBook, cand: Candidate) -> tuple[float, list[str]
             score -= 100
             ev.append("conflict:isbn")
 
-    lt, ct = normalize_title(local.title), normalize_title(e.work.title)
+    lt, ct = _norm_title(local.title), _norm_title(e.work.title)
     if lt and ct:
         if lt == ct:
             score += 40
@@ -93,10 +101,22 @@ def score_candidate(local: LocalBook, cand: Candidate) -> tuple[float, list[str]
     return score, ev
 
 
+def same_work(a: Candidate, b: Candidate) -> bool:
+    """True when two candidates plausibly describe the same work."""
+    if _norm_title(a.edition.work.title) != _norm_title(b.edition.work.title):
+        return False
+    aa = {normalize_author(x.name) for x in a.edition.work.authors}
+    ba = {normalize_author(x.name) for x in b.edition.work.authors}
+    return not aa or not ba or bool(aa & ba)
+
+
 def confidence_from_score(score: float, evidence: list[str]) -> float:
     if "exact_isbn" in evidence and not any(e.startswith("conflict:") for e in evidence):
         return 0.99
     conf = max(0.0, min(score / 100, 1.0))
+    if not any(e.startswith("conflict:") for e in evidence):
+        if "exact_title" in evidence and "exact_author" in evidence:
+            conf = max(conf, 0.90)  # work-level identity
     if "conflict:isbn" in evidence:
         conf = min(conf, 0.40)
     return conf

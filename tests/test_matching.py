@@ -70,3 +70,32 @@ def test_bands():
 def test_confidence_clamped():
     assert confidence_from_score(-50, []) == 0.0
     assert confidence_from_score(500, []) == 1.0
+
+
+def test_marketing_subtitle_still_exact_title():
+    local = LocalBook(
+        title="超新星纪元（刘慈欣的创作从《超新星纪元》开始！20万字未删节版！）",
+        authors=["刘慈欣"],
+    )
+    score, ev = score_candidate(local, _cand(title="超新星纪元", author="刘慈欣"))
+    assert "exact_title" in ev and "exact_author" in ev
+
+
+def test_same_work():
+    from book_organizer.matching.scorer import same_work
+
+    a = _cand(title="超新星纪元", author="刘慈欣")
+    b = _cand(title="超新星纪元（新版）", author="刘慈欣")
+    c = _cand(title="三体Ⅱ", author="刘慈欣")
+    assert same_work(a, b)
+    assert not same_work(a, c)
+
+
+def test_exact_title_and_author_floor():
+    # work-level identity: exact title + exact author with no conflicts
+    # must reach HIGH_CONFIDENCE even without ISBN/language/year evidence
+    assert confidence_from_score(70, ["exact_title", "exact_author"]) >= 0.90
+    assert (
+        confidence_from_score(55, ["exact_title", "exact_author", "conflict:language"])
+        < 0.90
+    )

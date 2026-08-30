@@ -30,8 +30,14 @@ class ProviderConfig(BaseModel):
     enabled: bool = True
 
 
+class DoubanConfig(ProviderConfig):
+    # Community key for the legacy v2 API; replace with your own if you have one.
+    apikey: str = "0ac44ae016490db2204ce0a042db2916"
+
+
 class ProvidersConfig(BaseModel):
     openlibrary: ProviderConfig = ProviderConfig()
+    douban: DoubanConfig = DoubanConfig()
 
 
 class CacheConfig(BaseModel):

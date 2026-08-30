@@ -1,4 +1,5 @@
 import json as _json
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -13,10 +14,12 @@ from book_organizer.matching.scorer import (
     LocalBook,
     band,
     confidence_from_score,
+    same_work,
     score_candidate,
 )
 from book_organizer.planner.planner import generate_plan
 from book_organizer.providers.cache import FileCache
+from book_organizer.providers.douban import DoubanProvider
 from book_organizer.providers.openlibrary import OpenLibraryProvider
 from book_organizer.reports.report import build_report
 from book_organizer.db.database import Database
@@ -38,7 +41,7 @@ ROOT_OPTION = typer.Option(Path("."), "--root", help="Library root (with config.
 
 SUBDIRS = [
     "incoming", "library", "quarantine", "duplicates", "covers",
-    "cache/openlibrary", "reports", "db",
+    "cache/openlibrary", "cache/douban", "reports", "db",
 ]
 
 
@@ -135,22 +138,45 @@ _BAND_TO_STATUS = {
 }
 
 
-def _match_file(db, provider, mcfg, row) -> str:
+_HAS_CJK = re.compile(r"[一-鿿]")
+
+
+def _order_providers(providers: list, local: LocalBook) -> list:
+    """Chinese-looking books query Douban first; everything else Open Library."""
+    text = (local.title or "") + " ".join(local.authors)
+    if local.language == "zh" or _HAS_CJK.search(text):
+        return sorted(providers, key=lambda p: p.name != "douban")
+    return providers
+
+
+def _gather_candidates(providers: list, local: LocalBook) -> list:
+    for provider in providers:
+        found = []
+        for isbn in local.isbn13s:
+            found += provider.lookup_isbn(isbn)
+        if found:
+            return found
+    for provider in providers:
+        if not local.title:
+            break
+        title_q = short_title(local.title)
+        author_q = search_author(local.authors[0]) if local.authors else None
+        found = provider.search(title_q, author_q)
+        if not found and author_q:
+            found = provider.search(title_q)
+        if found:
+            return found
+    return []
+
+
+def _match_file(db, providers, mcfg, row) -> str:
     local = LocalBook(
         title=row["title_raw"] or title_from_filename(Path(row["path"]).stem),
         authors=[a.strip() for a in (row["author_raw"] or "").split(";") if a.strip()],
         isbn13s=[row["isbn_raw"]] if row["isbn_raw"] else [],
         language=row["language_raw"],
     )
-    candidates = []
-    for isbn in local.isbn13s:
-        candidates += provider.lookup_isbn(isbn)
-    if not candidates and local.title:
-        title_q = short_title(local.title)
-        author_q = search_author(local.authors[0]) if local.authors else None
-        candidates += provider.search(title_q, author_q)
-        if not candidates and author_q:
-            candidates += provider.search(title_q)
+    candidates = _gather_candidates(_order_providers(providers, local), local)
     for cand in candidates:
         cand.score, cand.evidence = score_candidate(local, cand)
         cand.confidence = confidence_from_score(cand.score, cand.evidence)
@@ -164,9 +190,14 @@ def _match_file(db, provider, mcfg, row) -> str:
         len(candidates) > 1
         and best.score - candidates[1].score < 10
         and b in ("AUTO_ACCEPT", "HIGH_CONFIDENCE")
+        and not same_work(best, candidates[1])
     ):
         b = "REVIEW_RECOMMENDED"
         best.evidence.append("ambiguous:tie")
+    for provider in providers:
+        if provider.name == best.provider:
+            best = provider.enrich(best)
+            break
     edition_id = db.save_candidate(best)
     db.record_match(
         row["id"], edition_id, best.score, best.confidence,
@@ -189,14 +220,32 @@ def match(
 ) -> None:
     """Match identified files against Open Library."""
     cfg = load_config(root)
-    if not cfg.providers.openlibrary.enabled:
-        typer.echo("openlibrary provider disabled in config", err=True)
-        raise typer.Exit(1)
-    cache = FileCache(cfg.library.root / "cache" / "openlibrary", cfg.cache.ttl_days)
     client = None if offline else httpx.Client(
         headers={"User-Agent": f"book-organizer/{__version__}"}
     )
-    provider = OpenLibraryProvider(client=client, cache=cache)
+    providers = []
+    if cfg.providers.openlibrary.enabled:
+        providers.append(
+            OpenLibraryProvider(
+                client=client,
+                cache=FileCache(
+                    cfg.library.root / "cache" / "openlibrary", cfg.cache.ttl_days
+                ),
+            )
+        )
+    if cfg.providers.douban.enabled:
+        providers.append(
+            DoubanProvider(
+                client=client,
+                cache=FileCache(
+                    cfg.library.root / "cache" / "douban", cfg.cache.ttl_days
+                ),
+                apikey=cfg.providers.douban.apikey,
+            )
+        )
+    if not providers:
+        typer.echo("all providers disabled in config", err=True)
+        raise typer.Exit(1)
     counts: dict[str, int] = {}
     try:
         with Database(cfg.database.path) as db:
@@ -204,7 +253,7 @@ def match(
             total = len(rows)
             for i, row in enumerate(rows, 1):
                 try:
-                    status = _match_file(db, provider, cfg.matching, row)
+                    status = _match_file(db, providers, cfg.matching, row)
                 except httpx.HTTPError as e:
                     # leave the file IDENTIFIED so a later run retries it
                     status = "NETWORK_ERROR"
