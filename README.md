@@ -63,7 +63,7 @@ Reads embedded metadata (EPUB OPF; PDF info plus an ISBN scan of the first
 5 pages — no OCR). Unreadable files are marked ERROR and skipped until
 `--force`.
 
-### 4. Match against Open Library
+### 4. Match against Open Library and Douban
 
 ```bash
 book-organizer match --root /mnt/data/Books
@@ -71,11 +71,12 @@ book-organizer match --root /mnt/data/Books --offline   # local cache only, no n
 ```
 
 Looks up each identified file by ISBN, falling back to title/author
-search, then scores candidates deterministically (spec §14). Every match
-stores its score, confidence, and evidence. Results land in confidence
-bands: exact-ISBN and high-confidence matches become MATCHED; ambiguous
-ones go to REVIEW; the rest stay UNRESOLVED. All API responses are cached
-under `cache/openlibrary/` for 30 days.
+search, then scores candidates deterministically (spec §14). Books with
+Chinese titles/authors query Douban first, everything else Open Library
+first. Every match stores its score, confidence, and evidence. Results
+land in confidence bands: exact-ISBN and high-confidence matches become
+MATCHED; ambiguous ones go to REVIEW; the rest stay UNRESOLVED. All API
+responses are cached under `cache/` for 30 days.
 
 ### 5. Report
 
@@ -134,5 +135,4 @@ Only one `book-organizer` process may run against a library at a time
 ```
 
 Planned next (spec Phase 2): AI `resolve`, review TUI, `commit`/`rollback`,
-Calibre import, and additional metadata providers (Google Books, Crossref,
-Douban for Chinese-language coverage).
+Calibre import, and additional metadata providers (Google Books, Crossref).
