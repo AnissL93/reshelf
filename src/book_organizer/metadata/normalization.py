@@ -32,7 +32,7 @@ def title_from_filename(stem: str) -> str:
 
 def short_title(s: str) -> str:
     """Main title for provider search: cut subtitles and bracketed suffixes."""
-    head = re.split(r"[:：(（【\[]", s, 1)[0].strip(" -_.")
+    head = re.split(r"[:：(（【\[]", s, maxsplit=1)[0].strip(" -_.")
     return head or s
 
 
