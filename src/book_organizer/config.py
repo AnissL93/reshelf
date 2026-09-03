@@ -47,7 +47,7 @@ class CacheConfig(BaseModel):
 class AIConfig(BaseModel):
     enabled: bool = True
     resolver_only: bool = True  # AI selects among candidates, never invents metadata
-    model: str = "opus"  # passed to `claude -p --model`
+    model: str = "haiku"  # passed to `claude -p --model`; fastest/cheapest tier
     timeout_seconds: int = 180
 
 
