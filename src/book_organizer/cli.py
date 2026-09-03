@@ -9,6 +9,7 @@ from rich.console import Console
 from rich.table import Table
 
 from book_organizer import __version__
+from book_organizer.ai.resolver import AIError, ClaudeCLIResolver
 from book_organizer.config import default_config, load_config, save_config
 from book_organizer.matching.scorer import (
     LocalBook,
@@ -169,13 +170,41 @@ def _gather_candidates(providers: list, local: LocalBook) -> list:
     return []
 
 
-def _match_file(db, providers, mcfg, row) -> str:
-    local = LocalBook(
+def _local_book(row) -> LocalBook:
+    return LocalBook(
         title=row["title_raw"] or title_from_filename(Path(row["path"]).stem),
         authors=[a.strip() for a in (row["author_raw"] or "").split(";") if a.strip()],
         isbn13s=[row["isbn_raw"]] if row["isbn_raw"] else [],
         language=row["language_raw"],
     )
+
+
+def _build_providers(cfg, client) -> list:
+    providers = []
+    if cfg.providers.openlibrary.enabled:
+        providers.append(
+            OpenLibraryProvider(
+                client=client,
+                cache=FileCache(
+                    cfg.library.root / "cache" / "openlibrary", cfg.cache.ttl_days
+                ),
+            )
+        )
+    if cfg.providers.douban.enabled:
+        providers.append(
+            DoubanProvider(
+                client=client,
+                cache=FileCache(
+                    cfg.library.root / "cache" / "douban", cfg.cache.ttl_days
+                ),
+                apikey=cfg.providers.douban.apikey,
+            )
+        )
+    return providers
+
+
+def _match_file(db, providers, mcfg, row) -> str:
+    local = _local_book(row)
     candidates = _gather_candidates(_order_providers(providers, local), local)
     for cand in candidates:
         cand.score, cand.evidence = score_candidate(local, cand)
@@ -223,26 +252,7 @@ def match(
     client = None if offline else httpx.Client(
         headers={"User-Agent": f"book-organizer/{__version__}"}
     )
-    providers = []
-    if cfg.providers.openlibrary.enabled:
-        providers.append(
-            OpenLibraryProvider(
-                client=client,
-                cache=FileCache(
-                    cfg.library.root / "cache" / "openlibrary", cfg.cache.ttl_days
-                ),
-            )
-        )
-    if cfg.providers.douban.enabled:
-        providers.append(
-            DoubanProvider(
-                client=client,
-                cache=FileCache(
-                    cfg.library.root / "cache" / "douban", cfg.cache.ttl_days
-                ),
-                apikey=cfg.providers.douban.apikey,
-            )
-        )
+    providers = _build_providers(cfg, client)
     if not providers:
         typer.echo("all providers disabled in config", err=True)
         raise typer.Exit(1)
@@ -269,6 +279,94 @@ def match(
         if client is not None:
             client.close()
     typer.echo(" ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "nothing to match")
+
+
+@app.command()
+def resolve(
+    root: Path = ROOT_OPTION,
+    limit: int = typer.Option(0, "--limit", help="Max files to process (0 = all)"),
+    include_unresolved: bool = typer.Option(
+        False, "--include-unresolved", help="Also retry UNRESOLVED files"
+    ),
+) -> None:
+    """Ask Claude to judge ambiguous matches (review queue) using cached candidates."""
+    cfg = load_config(root)
+    if not cfg.ai.enabled:
+        typer.echo("ai disabled in config", err=True)
+        raise typer.Exit(1)
+    resolver = ClaudeCLIResolver(model=cfg.ai.model, timeout=cfg.ai.timeout_seconds)
+    providers = _build_providers(cfg, client=None)  # cache-only candidate regathering
+    statuses = ["REVIEW"] + (["UNRESOLVED"] if include_unresolved else [])
+    counts: dict[str, int] = {}
+
+    def bump(key: str) -> None:
+        counts[key] = counts.get(key, 0) + 1
+
+    with Database(cfg.database.path) as db:
+        rows = [r for s in statuses for r in db.files_with_status(s)]
+        if limit:
+            rows = rows[:limit]
+        total = len(rows)
+        for i, row in enumerate(rows, 1):
+            local = _local_book(row)
+            candidates = _gather_candidates(_order_providers(providers, local), local)
+            if not candidates:
+                bump("NO_CANDIDATES")
+                continue
+            for cand in candidates:
+                cand.score, cand.evidence = score_candidate(local, cand)
+            try:
+                decision = resolver.resolve(
+                    {
+                        "filename": Path(row["path"]).name,
+                        "title": local.title,
+                        "authors": local.authors,
+                        "isbn13": local.isbn13s[0] if local.isbn13s else None,
+                        "language": local.language,
+                    },
+                    candidates,
+                )
+            except AIError as e:
+                bump("AI_ERROR")
+                typer.echo(f"AI error on {row['path']}: {e}", err=True)
+                continue
+            if decision.decision is None:
+                db.set_status(row["id"], "UNRESOLVED")
+                bump("UNRESOLVED")
+            else:
+                best = candidates[decision.decision]
+                conf = min(max(decision.confidence, 0.0), 0.97)  # never AUTO_ACCEPT
+                b = band(conf, cfg.matching)
+                if b == "AUTO_ACCEPT":
+                    b = "HIGH_CONFIDENCE"
+                evidence = (
+                    best.evidence
+                    + [f"ai:{r}" for r in decision.reasons]
+                    + [f"ai_uncertain:{u}" for u in decision.uncertainties]
+                )
+                for provider in providers:
+                    if provider.name == best.provider:
+                        best = provider.enrich(best)
+                        break
+                edition_id = db.save_candidate(best)
+                db.record_match(
+                    row["id"], edition_id, best.score, conf, "ai", evidence, b
+                )
+                status = _BAND_TO_STATUS[b]
+                db.set_file_match(
+                    row["id"],
+                    edition_id if status == "MATCHED" else None,
+                    conf,
+                    status,
+                )
+                bump(status)
+            db.conn.commit()
+            if i % 10 == 0 or i == total:
+                typer.echo(
+                    f"[{i}/{total}] "
+                    + " ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+                )
+    typer.echo(" ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "nothing to resolve")
 
 
 @app.command()

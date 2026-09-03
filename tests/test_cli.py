@@ -118,3 +118,90 @@ def test_match_offline_with_seeded_cache(tmp_path):
         assert rows["mystery.epub"]["status"] == "UNRESOLVED"
         m = db.conn.execute("SELECT * FROM matches").fetchone()
         assert m["status"] == "AUTO_ACCEPT" and m["resolver"] == "deterministic"
+
+
+def test_resolve_applies_ai_decision(tmp_path, monkeypatch):
+    from book_organizer.ai.resolver import AIDecision, ClaudeCLIResolver
+    from book_organizer.config import load_config
+    from book_organizer.db.database import Database
+    from book_organizer.providers.cache import FileCache
+
+    root = _init_root(tmp_path)
+    make_epub(
+        root / "incoming" / "tbp.epub",
+        title="The Three-Body Problem",
+        author="Liu Cixin",
+        isbn="9780765382030",
+        language="en",
+    )
+    runner.invoke(app, ["scan", "--root", str(root)])
+    runner.invoke(app, ["extract", "--root", str(root)])
+    FileCache(root / "cache" / "openlibrary").put(
+        "isbn:9780765382030", OL_ISBN_RESPONSE
+    )
+    runner.invoke(app, ["match", "--root", str(root), "--offline"])
+
+    cfg = load_config(root)
+    with Database(cfg.database.path) as db:
+        fid = db.conn.execute("SELECT id FROM files").fetchone()["id"]
+        # force into the review queue so resolve picks it up
+        db.set_file_match(fid, None, 0.80, "REVIEW")
+        db.conn.commit()
+
+    calls = []
+
+    def fake_resolve(self, local, candidates):
+        calls.append((local, len(candidates)))
+        return AIDecision(
+            decision=0, confidence=0.95, reasons=["same work, translated title"]
+        )
+
+    monkeypatch.setattr(ClaudeCLIResolver, "resolve", fake_resolve)
+    r = runner.invoke(app, ["resolve", "--root", str(root)])
+    assert r.exit_code == 0, r.output
+
+    with Database(cfg.database.path) as db:
+        f = db.conn.execute("SELECT * FROM files WHERE id=?", (fid,)).fetchone()
+        assert f["status"] == "MATCHED"
+        assert f["match_confidence"] == 0.95
+        m = db.conn.execute(
+            "SELECT * FROM matches WHERE resolver='ai' ORDER BY id DESC"
+        ).fetchone()
+        assert m is not None and m["status"] == "HIGH_CONFIDENCE"
+        assert "ai:same work, translated title" in m["evidence_json"]
+    assert len(calls) == 1
+
+
+def test_resolve_null_decision_marks_unresolved(tmp_path, monkeypatch):
+    from book_organizer.ai.resolver import AIDecision, ClaudeCLIResolver
+    from book_organizer.config import load_config
+    from book_organizer.db.database import Database
+    from book_organizer.providers.cache import FileCache
+
+    root = _init_root(tmp_path)
+    make_epub(root / "incoming" / "x.epub", title="The Three-Body Problem",
+              author="Liu Cixin", isbn="9780765382030", language="en")
+    runner.invoke(app, ["scan", "--root", str(root)])
+    runner.invoke(app, ["extract", "--root", str(root)])
+    FileCache(root / "cache" / "openlibrary").put(
+        "isbn:9780765382030", OL_ISBN_RESPONSE
+    )
+    runner.invoke(app, ["match", "--root", str(root), "--offline"])
+    cfg = load_config(root)
+    with Database(cfg.database.path) as db:
+        fid = db.conn.execute("SELECT id FROM files").fetchone()["id"]
+        db.set_file_match(fid, None, 0.80, "REVIEW")
+        db.conn.commit()
+
+    monkeypatch.setattr(
+        ClaudeCLIResolver,
+        "resolve",
+        lambda self, local, candidates: AIDecision(
+            decision=None, confidence=0.1, reasons=["different work"]
+        ),
+    )
+    r = runner.invoke(app, ["resolve", "--root", str(root)])
+    assert r.exit_code == 0, r.output
+    with Database(cfg.database.path) as db:
+        f = db.conn.execute("SELECT * FROM files WHERE id=?", (fid,)).fetchone()
+        assert f["status"] == "UNRESOLVED"

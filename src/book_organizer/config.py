@@ -44,6 +44,13 @@ class CacheConfig(BaseModel):
     ttl_days: int = 30
 
 
+class AIConfig(BaseModel):
+    enabled: bool = True
+    resolver_only: bool = True  # AI selects among candidates, never invents metadata
+    model: str = "opus"  # passed to `claude -p --model`
+    timeout_seconds: int = 180
+
+
 class Config(BaseModel):
     library: LibraryConfig
     database: DatabaseConfig
@@ -51,6 +58,7 @@ class Config(BaseModel):
     matching: MatchingConfig = MatchingConfig()
     providers: ProvidersConfig = ProvidersConfig()
     cache: CacheConfig = CacheConfig()
+    ai: AIConfig = AIConfig()
 
 
 def default_config(root: Path) -> Config:
