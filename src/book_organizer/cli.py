@@ -18,6 +18,7 @@ from book_organizer.matching.scorer import (
     same_work,
     score_candidate,
 )
+from book_organizer.planner.committer import apply_plan, rollback_journal
 from book_organizer.planner.planner import generate_plan
 from book_organizer.providers.cache import FileCache
 from book_organizer.providers.douban import DoubanProvider
@@ -397,6 +398,67 @@ def plan(root: Path = ROOT_OPTION) -> None:
         out = generate_plan(db, cfg.library.root / "reports")
         n = len(_json.loads(out.read_text())["actions"])
     typer.echo(f"plan written: {out} ({n} actions). No files were modified.")
+
+
+def _latest_plan(reports_dir: Path) -> Path | None:
+    plans = sorted(reports_dir.glob("plan-*.json"))
+    return plans[-1] if plans else None
+
+
+@app.command()
+def commit(
+    root: Path = ROOT_OPTION,
+    plan_file: Optional[Path] = typer.Option(None, "--plan", help="Plan file (default: latest)"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    quarantine: bool = typer.Option(
+        False, "--quarantine", help="Also MOVE unresolved files into quarantine/"
+    ),
+    duplicates: bool = typer.Option(
+        False, "--duplicates", help="Also MOVE binary duplicates into duplicates/"
+    ),
+) -> None:
+    """Execute a plan: copy matched books into library/ (originals untouched)."""
+    cfg = load_config(root)
+    reports_dir = cfg.library.root / "reports"
+    plan_path = plan_file or _latest_plan(reports_dir)
+    if plan_path is None:
+        typer.echo("no plan found; run `book-organizer plan` first", err=True)
+        raise typer.Exit(1)
+    plan_data = _json.loads(Path(plan_path).read_text())
+    with Database(cfg.database.path) as db:
+        journal = apply_plan(
+            plan_data,
+            db,
+            library_dir=cfg.library.root / "library",
+            quarantine_dir=cfg.library.quarantine,
+            duplicates_dir=cfg.library.root / "duplicates",
+            reports_dir=reports_dir,
+            dry_run=dry_run,
+            do_quarantine=quarantine,
+            do_duplicates=duplicates,
+        )
+    verb = "would perform" if dry_run else "performed"
+    typer.echo(
+        f"{verb}={len(journal['actions'])} skipped={len(journal['skipped'])}"
+        + ("" if dry_run else f" journal=reports/commit-{journal['commit_id']}.json")
+    )
+
+
+@app.command()
+def rollback(
+    commit_id: str = typer.Argument(..., help="Commit id from the journal filename"),
+    root: Path = ROOT_OPTION,
+) -> None:
+    """Undo a commit using its journal (removes copies, restores moves)."""
+    cfg = load_config(root)
+    journal_path = cfg.library.root / "reports" / f"commit-{commit_id}.json"
+    if not journal_path.exists():
+        typer.echo(f"no journal at {journal_path}", err=True)
+        raise typer.Exit(1)
+    journal = _json.loads(journal_path.read_text())
+    with Database(cfg.database.path) as db:
+        result = rollback_journal(journal, db, cfg.library.root / "library")
+    typer.echo(f"reverted={result['reverted']} skipped={result['skipped']}")
 
 
 def main() -> None:

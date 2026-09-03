@@ -43,5 +43,6 @@ def test_generate_plan_actions(tmp_path):
     }
     assert actions["/x/tbp.epub"]["metadata_changes"]["isbn13"] == "9780765382030"
     assert actions["/x/tbp.epub"]["metadata_changes"]["title"] == "The Three-Body Problem"
+    assert actions["/x/tbp.epub"]["metadata_changes"]["author"] == "Liu Cixin"
     assert actions["/x/dup.epub"]["action"] == "mark_duplicate"
     assert actions["/x/unknown.epub"]["action"] == "quarantine"
