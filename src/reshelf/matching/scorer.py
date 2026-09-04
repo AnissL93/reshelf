@@ -3,9 +3,9 @@ from dataclasses import dataclass, field
 
 from rapidfuzz import fuzz
 
-from book_organizer.config import MatchingConfig
-from book_organizer.metadata.models import Candidate
-from book_organizer.metadata.normalization import (
+from reshelf.config import MatchingConfig
+from reshelf.metadata.models import Candidate
+from reshelf.metadata.normalization import (
     normalize_author,
     normalize_title,
     search_author,

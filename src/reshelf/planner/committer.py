@@ -5,8 +5,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from book_organizer.db.database import Database
-from book_organizer.scanner.hashing import sha256_file
+from reshelf.db.database import Database
+from reshelf.scanner.hashing import sha256_file
 
 
 def _safe(component: str) -> str:

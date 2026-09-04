@@ -4,8 +4,8 @@ import subprocess
 
 from pydantic import BaseModel, field_validator
 
-from book_organizer.ai.prompts import build_prompt
-from book_organizer.metadata.models import Candidate
+from reshelf.ai.prompts import build_prompt
+from reshelf.metadata.models import Candidate
 
 
 class AIError(Exception):

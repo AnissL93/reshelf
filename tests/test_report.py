@@ -2,9 +2,9 @@ import json
 
 from typer.testing import CliRunner
 
-from book_organizer.cli import app
-from book_organizer.db.database import Database
-from book_organizer.reports.report import build_report
+from reshelf.cli import app
+from reshelf.db.database import Database
+from reshelf.reports.report import build_report
 
 runner = CliRunner()
 
@@ -44,7 +44,7 @@ def test_build_report_counts(tmp_path):
 
 def test_report_json_command(tmp_path):
     _seed(tmp_path).close()
-    from book_organizer.config import default_config, save_config
+    from reshelf.config import default_config, save_config
 
     save_config(default_config(tmp_path), tmp_path)
     r = runner.invoke(app, ["report", "--root", str(tmp_path), "--json"])

@@ -2,9 +2,9 @@ from pathlib import Path
 
 import pymupdf as fitz
 
-from book_organizer.extractors.base import ExtractedMetadata, ExtractionError
-from book_organizer.metadata.isbn import find_isbns
-from book_organizer.metadata.normalization import clean_text
+from reshelf.extractors.base import ExtractedMetadata, ExtractionError
+from reshelf.metadata.isbn import find_isbns
+from reshelf.metadata.normalization import clean_text
 
 _ISBN_SCAN_PAGES = 5
 

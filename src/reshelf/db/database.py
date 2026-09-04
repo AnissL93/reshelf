@@ -4,7 +4,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from book_organizer.metadata.models import Candidate
+from reshelf.metadata.models import Candidate
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
@@ -134,7 +134,7 @@ class Database:
             os.write(self._lock_fd, str(os.getpid()).encode())
         except FileExistsError:
             raise LockError(
-                f"another book-organizer instance holds {self.lock_path} "
+                f"another reshelf instance holds {self.lock_path} "
                 "(delete it if that process crashed)"
             ) from None
         self.conn = sqlite3.connect(self.path, timeout=30)

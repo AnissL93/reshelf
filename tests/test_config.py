@@ -1,4 +1,4 @@
-from book_organizer.config import default_config, load_config, save_config
+from reshelf.config import default_config, load_config, save_config
 
 
 def test_default_roundtrip(tmp_path):

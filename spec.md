@@ -1,10 +1,10 @@
-# Book Organizer Skill — Specification v0.2
+# Reshelf — Specification v0.2
 
 ## 1. Overview
 
 ### Name
 
-`book-organizer`
+`reshelf`
 
 ### Purpose
 
@@ -755,7 +755,7 @@ unless conflicting evidence exists.
 Band actions:
 
 * AUTO_ACCEPT and HIGH_CONFIDENCE matches enter the plan without manual review (HIGH_CONFIDENCE is flagged in the report)
-* REVIEW_RECOMMENDED requires `book-organizer review`
+* REVIEW_RECOMMENDED requires `reshelf review`
 * AI_RESOLUTION is sent to the AI resolver; the resulting confidence is re-classified into these same bands, but an AI-resolved match MUST NOT reach AUTO_ACCEPT — its best outcome is HIGH_CONFIDENCE
 * UNRESOLVED files are reported and may receive a quarantine action in the plan
 
@@ -1150,7 +1150,7 @@ calibre-server
 Recommended architecture:
 
 ```text
-book-organizer
+reshelf
       ↓
 clean metadata
       ↓
@@ -1180,13 +1180,13 @@ Always use Calibre CLI/API.
 Executable:
 
 ```bash
-book-organizer
+reshelf
 ```
 
 ### Initialize
 
 ```bash
-book-organizer init /mnt/data/Books
+reshelf init /mnt/data/Books
 ```
 
 Creates:
@@ -1202,13 +1202,13 @@ config.yaml
 ### Scan
 
 ```bash
-book-organizer scan
+reshelf scan
 ```
 
 Optional:
 
 ```bash
-book-organizer scan /mnt/data/Books/incoming
+reshelf scan /mnt/data/Books/incoming
 ```
 
 Options:
@@ -1225,13 +1225,13 @@ Options:
 ### Extract metadata
 
 ```bash
-book-organizer extract
+reshelf extract
 ```
 
 Single file:
 
 ```bash
-book-organizer extract book.epub
+reshelf extract book.epub
 ```
 
 ---
@@ -1239,7 +1239,7 @@ book-organizer extract book.epub
 ### Match
 
 ```bash
-book-organizer match
+reshelf match
 ```
 
 Options:
@@ -1259,13 +1259,13 @@ Options:
 ### AI resolution
 
 ```bash
-book-organizer resolve
+reshelf resolve
 ```
 
 By default `resolve` processes only the AI_RESOLUTION band (see Confidence Policy). To widen the range:
 
 ```bash
-book-organizer resolve --confidence-below 0.90
+reshelf resolve --confidence-below 0.90
 ```
 
 ---
@@ -1273,7 +1273,7 @@ book-organizer resolve --confidence-below 0.90
 ### Review
 
 ```bash
-book-organizer review
+reshelf review
 ```
 
 Example interface:
@@ -1322,7 +1322,7 @@ Evidence
 ### Report
 
 ```bash
-book-organizer report
+reshelf report
 ```
 
 Example:
@@ -1341,9 +1341,9 @@ Unresolved                44
 Optional:
 
 ```bash
-book-organizer report --json
-book-organizer report --csv
-book-organizer report --html
+reshelf report --json
+reshelf report --csv
+reshelf report --html
 ```
 
 ---
@@ -1351,7 +1351,7 @@ book-organizer report --html
 ### Duplicates
 
 ```bash
-book-organizer duplicates
+reshelf duplicates
 ```
 
 Lists binary / edition / work duplicate groups (see Duplicate Detection).
@@ -1361,7 +1361,7 @@ Lists binary / edition / work duplicate groups (see Duplicate Detection).
 ### Status
 
 ```bash
-book-organizer status
+reshelf status
 ```
 
 Shows file counts per state and pending plan / commit information.
@@ -1377,7 +1377,7 @@ Never combine metadata resolution and filesystem mutation into one step.
 First:
 
 ```bash
-book-organizer plan
+reshelf plan
 ```
 
 Output:
@@ -1410,13 +1410,13 @@ Example:
 Then:
 
 ```bash
-book-organizer commit
+reshelf commit
 ```
 
 Option:
 
 ```bash
-book-organizer commit \
+reshelf commit \
   --plan reports/plan.json
 ```
 
@@ -1433,7 +1433,7 @@ mark_duplicate
 Dry-run:
 
 ```bash
-book-organizer commit --dry-run
+reshelf commit --dry-run
 ```
 
 Commit MUST verify each action's preconditions and skip (and report) any file that changed since the plan was generated.
@@ -1441,7 +1441,7 @@ Commit MUST verify each action's preconditions and skip (and report) any file th
 Commit writes a journal to `reports/commit-<id>.json` recording every performed action and metadata backup, enabling:
 
 ```bash
-book-organizer rollback <commit-id>
+reshelf rollback <commit-id>
 ```
 
 ---
@@ -1533,7 +1533,7 @@ safety:
 Recommended:
 
 ```text
-book-organizer/
+reshelf/
 ├── pyproject.toml
 ├── README.md
 ├── config.example.yaml
@@ -2101,15 +2101,15 @@ book_commit
 v1 is complete when the following works reliably:
 
 ```bash
-book-organizer init /mnt/data/Books
+reshelf init /mnt/data/Books
 
-book-organizer scan
+reshelf scan
 
-book-organizer match
+reshelf match
 
-book-organizer report
+reshelf report
 
-book-organizer plan
+reshelf plan
 ```
 
 for a directory containing several thousand EPUB/PDF files.

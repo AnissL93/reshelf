@@ -1,6 +1,6 @@
 import json
 
-from book_organizer.metadata.models import Candidate
+from reshelf.metadata.models import Candidate
 
 INSTRUCTIONS = """\
 You are a book-metadata resolver. Decide which candidate record (if any)

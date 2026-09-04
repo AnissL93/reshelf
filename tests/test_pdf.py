@@ -1,7 +1,7 @@
 import pytest
 
-from book_organizer.extractors.base import ExtractionError
-from book_organizer.extractors.pdf import extract_pdf
+from reshelf.extractors.base import ExtractionError
+from reshelf.extractors.pdf import extract_pdf
 from tests.helpers import make_pdf
 
 

@@ -1,6 +1,6 @@
 import json
 
-from book_organizer.calibre.export import (
+from reshelf.calibre.export import (
     CalibreBook,
     add_command,
     books_to_export,
@@ -8,7 +8,7 @@ from book_organizer.calibre.export import (
     parse_added_ids,
     set_metadata_command,
 )
-from book_organizer.db.database import Database
+from reshelf.db.database import Database
 
 
 def test_normalize_pubdate_handles_douban_and_openlibrary_forms():
@@ -150,8 +150,8 @@ def test_books_to_export_ignores_non_import_actions(tmp_path):
 
 from typer.testing import CliRunner  # noqa: E402
 
-from book_organizer.cli import app  # noqa: E402
-from book_organizer.config import load_config  # noqa: E402
+from reshelf.cli import app  # noqa: E402
+from reshelf.config import load_config  # noqa: E402
 
 runner = CliRunner()
 

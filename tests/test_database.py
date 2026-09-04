@@ -1,6 +1,6 @@
 import pytest
 
-from book_organizer.db.database import Database, LockError
+from reshelf.db.database import Database, LockError
 
 
 def test_init_schema_creates_tables(tmp_path):
@@ -80,7 +80,7 @@ def test_scan_runs(tmp_path):
         assert row["files_seen"] == 3 and row["completed_at"] is not None
 
 
-from book_organizer.metadata.models import Author, Candidate, Edition, Work  # noqa: E402
+from reshelf.metadata.models import Author, Candidate, Edition, Work  # noqa: E402
 
 
 def _tbp_candidate():

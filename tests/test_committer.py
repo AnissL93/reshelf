@@ -3,10 +3,10 @@ import json
 
 from typer.testing import CliRunner
 
-from book_organizer.cli import app
-from book_organizer.config import default_config, load_config, save_config
-from book_organizer.db.database import Database
-from book_organizer.planner.committer import dest_for
+from reshelf.cli import app
+from reshelf.config import default_config, load_config, save_config
+from reshelf.db.database import Database
+from reshelf.planner.committer import dest_for
 
 runner = CliRunner()
 
@@ -47,7 +47,7 @@ def _setup_committed_root(tmp_path, content=b"BOOKDATA"):
         st = src.stat()
         fid, _ = db.upsert_file(str(src), st.st_size, int(st.st_mtime), "epub")
         db.set_hash(fid, hashlib.sha256(content).hexdigest())
-        from book_organizer.metadata.models import Author, Candidate, Edition, Work
+        from reshelf.metadata.models import Author, Candidate, Edition, Work
 
         eid = db.save_candidate(
             Candidate(

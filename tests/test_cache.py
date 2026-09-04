@@ -1,7 +1,7 @@
 import json
 from datetime import datetime, timedelta, timezone
 
-from book_organizer.providers.cache import FileCache
+from reshelf.providers.cache import FileCache
 
 
 def test_roundtrip_and_miss(tmp_path):

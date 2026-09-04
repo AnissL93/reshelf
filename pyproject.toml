@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "book-organizer"
+name = "reshelf"
 version = "0.1.0"
 description = "Organize large collections of EPUB/PDF ebooks"
 requires-python = ">=3.11"
@@ -21,10 +21,10 @@ dependencies = [
 dev = ["pytest>=8.0"]
 
 [project.scripts]
-book-organizer = "book_organizer.cli:main"
+reshelf = "reshelf.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/book_organizer"]
+packages = ["src/reshelf"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

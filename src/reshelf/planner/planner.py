@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from book_organizer.db.database import Database
+from reshelf.db.database import Database
 
 
 def _preconditions(row) -> dict:

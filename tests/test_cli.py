@@ -1,6 +1,6 @@
 from typer.testing import CliRunner
 
-from book_organizer.cli import app
+from reshelf.cli import app
 from tests.helpers import make_epub
 
 runner = CliRunner()
@@ -60,8 +60,8 @@ def test_extract_sets_metadata_and_states(tmp_path):
     r = runner.invoke(app, ["extract", "--root", str(root)])
     assert r.exit_code == 0, r.output
 
-    from book_organizer.config import load_config
-    from book_organizer.db.database import Database
+    from reshelf.config import load_config
+    from reshelf.db.database import Database
 
     cfg = load_config(root)
     with Database(cfg.database.path) as db:
@@ -87,9 +87,9 @@ OL_ISBN_RESPONSE = {
 
 
 def test_match_offline_with_seeded_cache(tmp_path):
-    from book_organizer.config import load_config
-    from book_organizer.db.database import Database
-    from book_organizer.providers.cache import FileCache
+    from reshelf.config import load_config
+    from reshelf.db.database import Database
+    from reshelf.providers.cache import FileCache
 
     root = _init_root(tmp_path)
     make_epub(
@@ -121,10 +121,10 @@ def test_match_offline_with_seeded_cache(tmp_path):
 
 
 def test_resolve_applies_ai_decision(tmp_path, monkeypatch):
-    from book_organizer.ai.resolver import AIDecision, ClaudeCLIResolver
-    from book_organizer.config import load_config
-    from book_organizer.db.database import Database
-    from book_organizer.providers.cache import FileCache
+    from reshelf.ai.resolver import AIDecision, ClaudeCLIResolver
+    from reshelf.config import load_config
+    from reshelf.db.database import Database
+    from reshelf.providers.cache import FileCache
 
     root = _init_root(tmp_path)
     make_epub(
@@ -173,10 +173,10 @@ def test_resolve_applies_ai_decision(tmp_path, monkeypatch):
 
 
 def test_resolve_null_decision_marks_unresolved(tmp_path, monkeypatch):
-    from book_organizer.ai.resolver import AIDecision, ClaudeCLIResolver
-    from book_organizer.config import load_config
-    from book_organizer.db.database import Database
-    from book_organizer.providers.cache import FileCache
+    from reshelf.ai.resolver import AIDecision, ClaudeCLIResolver
+    from reshelf.config import load_config
+    from reshelf.db.database import Database
+    from reshelf.providers.cache import FileCache
 
     root = _init_root(tmp_path)
     make_epub(root / "incoming" / "x.epub", title="The Three-Body Problem",

@@ -1,4 +1,4 @@
-from book_organizer.metadata.normalization import (
+from reshelf.metadata.normalization import (
     clean_text,
     normalize_author,
     normalize_language,
@@ -29,7 +29,7 @@ def test_title_from_filename_plain():
 
 
 def test_short_title():
-    from book_organizer.metadata.normalization import short_title
+    from reshelf.metadata.normalization import short_title
 
     assert (
         short_title("The Cultural Revolution: A People's History, 1962-1976")
@@ -41,7 +41,7 @@ def test_short_title():
 
 
 def test_search_author():
-    from book_organizer.metadata.normalization import search_author
+    from reshelf.metadata.normalization import search_author
 
     assert search_author("（美）MATTHEW MCKAY，JEFFREY C.WOOD著") == "MATTHEW MCKAY"
     assert search_author("加文·弗朗西斯; 悉达多•穆克吉") == "加文·弗朗西斯"

@@ -1,11 +1,11 @@
-from book_organizer.config import MatchingConfig
-from book_organizer.matching.scorer import (
+from reshelf.config import MatchingConfig
+from reshelf.matching.scorer import (
     LocalBook,
     band,
     confidence_from_score,
     score_candidate,
 )
-from book_organizer.metadata.models import Author, Candidate, Edition, Work
+from reshelf.metadata.models import Author, Candidate, Edition, Work
 
 
 def _cand(title="The Three-Body Problem", author="Liu Cixin", isbn13=None,
@@ -101,7 +101,7 @@ def test_exact_title_only_reaches_review():
 
 
 def test_same_work():
-    from book_organizer.matching.scorer import same_work
+    from reshelf.matching.scorer import same_work
 
     a = _cand(title="超新星纪元", author="刘慈欣")
     b = _cand(title="超新星纪元（新版）", author="刘慈欣")

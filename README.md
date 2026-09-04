@@ -1,4 +1,4 @@
-# book-organizer
+# reshelf
 
 Organize large collections of EPUB/PDF ebooks: scan, extract metadata,
 match against Open Library, detect duplicates, and produce a reviewable
@@ -18,7 +18,7 @@ python3 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
 ```
 
-The `book-organizer` command is then available at `.venv/bin/book-organizer`
+The `reshelf` command is then available at `.venv/bin/reshelf`
 (or on PATH with the venv activated).
 
 ## Usage
@@ -26,7 +26,7 @@ The `book-organizer` command is then available at `.venv/bin/book-organizer`
 ### 1. Initialize a library root
 
 ```bash
-book-organizer init /mnt/data/Books
+reshelf init /mnt/data/Books
 ```
 
 Creates the directory layout (`incoming/ library/ quarantine/ duplicates/
@@ -41,8 +41,8 @@ directory, so you can also just `cd` into the library root).
 ### 2. Scan
 
 ```bash
-book-organizer scan --root /mnt/data/Books          # scans incoming/
-book-organizer scan /some/other/dir --root /mnt/data/Books
+reshelf scan --root /mnt/data/Books          # scans incoming/
+reshelf scan /some/other/dir --root /mnt/data/Books
 ```
 
 Discovers `.epub`/`.pdf` files, records path/size/mtime, and hashes new or
@@ -57,8 +57,8 @@ seen=4863 added=4863 changed=0 duplicates=211
 ### 3. Extract metadata
 
 ```bash
-book-organizer extract --root /mnt/data/Books
-book-organizer extract --root /mnt/data/Books --force   # re-try ERROR files too
+reshelf extract --root /mnt/data/Books
+reshelf extract --root /mnt/data/Books --force   # re-try ERROR files too
 ```
 
 Reads embedded metadata (EPUB OPF; PDF info plus an ISBN scan of the first
@@ -68,8 +68,8 @@ Reads embedded metadata (EPUB OPF; PDF info plus an ISBN scan of the first
 ### 4. Match against Open Library and Douban
 
 ```bash
-book-organizer match --root /mnt/data/Books
-book-organizer match --root /mnt/data/Books --offline   # local cache only, no network
+reshelf match --root /mnt/data/Books
+reshelf match --root /mnt/data/Books --offline   # local cache only, no network
 ```
 
 Looks up each identified file by ISBN, falling back to title/author
@@ -83,9 +83,9 @@ responses are cached under `cache/` for 30 days.
 ### 5. AI-resolve ambiguous matches (optional)
 
 ```bash
-book-organizer resolve --root /mnt/data/Books
-book-organizer resolve --root /mnt/data/Books --limit 20            # sample first
-book-organizer resolve --root /mnt/data/Books --include-unresolved  # also retry UNRESOLVED
+reshelf resolve --root /mnt/data/Books
+reshelf resolve --root /mnt/data/Books --limit 20            # sample first
+reshelf resolve --root /mnt/data/Books --include-unresolved  # also retry UNRESOLVED
 ```
 
 Asks Claude (via the `claude` CLI — uses your Claude Code subscription, no
@@ -99,8 +99,8 @@ reasoning is stored in each match's evidence trail. Model is configurable
 ### 6. Report
 
 ```bash
-book-organizer report --root /mnt/data/Books
-book-organizer report --root /mnt/data/Books --json
+reshelf report --root /mnt/data/Books
+reshelf report --root /mnt/data/Books --json
 ```
 
 ```text
@@ -117,7 +117,7 @@ errors                    3
 ### 7. Generate a plan
 
 ```bash
-book-organizer plan --root /mnt/data/Books
+reshelf plan --root /mnt/data/Books
 ```
 
 Writes `reports/plan-<id>.json` describing what commit *would* do —
@@ -128,8 +128,8 @@ changed since planning. Planning itself never touches your files.
 ### 8. Commit the plan
 
 ```bash
-book-organizer commit --root /mnt/data/Books --dry-run   # preview
-book-organizer commit --root /mnt/data/Books             # execute imports
+reshelf commit --root /mnt/data/Books --dry-run   # preview
+reshelf commit --root /mnt/data/Books             # execute imports
 ```
 
 Executes the latest plan (or `--plan PATH`). Matched books are **copied**
@@ -141,8 +141,8 @@ reported. Re-running is safe: already-committed books are skipped.
 Two action types genuinely relocate files and are therefore opt-in:
 
 ```bash
-book-organizer commit --root /mnt/data/Books --duplicates   # move binary duplicates to duplicates/
-book-organizer commit --root /mnt/data/Books --quarantine   # move unresolved files to quarantine/
+reshelf commit --root /mnt/data/Books --duplicates   # move binary duplicates to duplicates/
+reshelf commit --root /mnt/data/Books --quarantine   # move unresolved files to quarantine/
 ```
 
 Every run writes a journal to `reports/commit-<id>.json`.
@@ -150,7 +150,7 @@ Every run writes a journal to `reports/commit-<id>.json`.
 ### 9. Rollback (if needed)
 
 ```bash
-book-organizer rollback <commit-id> --root /mnt/data/Books
+reshelf rollback <commit-id> --root /mnt/data/Books
 ```
 
 Undoes a commit using its journal: deletes the copies it made (cleaning
@@ -160,8 +160,8 @@ up empty directories) and restores any quarantine/duplicate moves. The
 ### 10. Export to Calibre
 
 ```bash
-book-organizer calibre-export --root /mnt/data/Books --library "/path/to/Calibre Library" --dry-run
-book-organizer calibre-export --root /mnt/data/Books --library "/path/to/Calibre Library"
+reshelf calibre-export --root /mnt/data/Books --library "/path/to/Calibre Library" --dry-run
+reshelf calibre-export --root /mnt/data/Books --library "/path/to/Calibre Library"
 ```
 
 `library/` is a plain folder tree, not a Calibre library -- Calibre
@@ -200,7 +200,7 @@ providers:
     apikey: "..."      # community key by default; replace with your own
 ```
 
-Only one `book-organizer` process may run against a library at a time
+Only one `reshelf` process may run against a library at a time
 (enforced via `db/.lock`; delete the lock file if a process crashed).
 
 ## Development

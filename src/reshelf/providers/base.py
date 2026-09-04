@@ -3,8 +3,8 @@ from abc import ABC, abstractmethod
 
 import httpx
 
-from book_organizer.metadata.models import Candidate
-from book_organizer.providers.cache import FileCache
+from reshelf.metadata.models import Candidate
+from reshelf.providers.cache import FileCache
 
 
 class MetadataProvider(ABC):

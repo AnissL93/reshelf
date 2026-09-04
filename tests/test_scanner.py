@@ -1,7 +1,7 @@
 import hashlib
 
-from book_organizer.scanner.hashing import sha256_file
-from book_organizer.scanner.scanner import iter_files
+from reshelf.scanner.hashing import sha256_file
+from reshelf.scanner.scanner import iter_files
 
 
 def _touch(p, content=b"x"):

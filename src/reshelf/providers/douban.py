@@ -2,10 +2,10 @@ import re
 
 import httpx
 
-from book_organizer.metadata.models import Author, Candidate, Edition, Work
-from book_organizer.metadata.normalization import clean_text
-from book_organizer.providers.base import MetadataProvider
-from book_organizer.providers.cache import FileCache
+from reshelf.metadata.models import Author, Candidate, Edition, Work
+from reshelf.metadata.normalization import clean_text
+from reshelf.providers.base import MetadataProvider
+from reshelf.providers.cache import FileCache
 
 API = "https://api.douban.com/v2"
 SUGGEST = "https://book.douban.com/j/subject_suggest"

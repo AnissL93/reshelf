@@ -8,35 +8,35 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from book_organizer import __version__
-from book_organizer.ai.resolver import AIError, ClaudeCLIResolver
-from book_organizer.config import default_config, load_config, save_config
-from book_organizer.matching.scorer import (
+from reshelf import __version__
+from reshelf.ai.resolver import AIError, ClaudeCLIResolver
+from reshelf.config import default_config, load_config, save_config
+from reshelf.matching.scorer import (
     LocalBook,
     band,
     confidence_from_score,
     same_work,
     score_candidate,
 )
-from book_organizer.calibre.export import books_to_export, export
-from book_organizer.planner.committer import apply_plan, rollback_journal
-from book_organizer.planner.planner import generate_plan
-from book_organizer.providers.cache import FileCache
-from book_organizer.providers.douban import DoubanProvider
-from book_organizer.providers.openlibrary import OpenLibraryProvider
-from book_organizer.reports.report import build_report
-from book_organizer.db.database import Database
-from book_organizer.extractors.base import ExtractionError
-from book_organizer.extractors.epub import extract_epub
-from book_organizer.extractors.pdf import extract_pdf
-from book_organizer.metadata.isbn import find_isbns
-from book_organizer.metadata.normalization import (
+from reshelf.calibre.export import books_to_export, export
+from reshelf.planner.committer import apply_plan, rollback_journal
+from reshelf.planner.planner import generate_plan
+from reshelf.providers.cache import FileCache
+from reshelf.providers.douban import DoubanProvider
+from reshelf.providers.openlibrary import OpenLibraryProvider
+from reshelf.reports.report import build_report
+from reshelf.db.database import Database
+from reshelf.extractors.base import ExtractionError
+from reshelf.extractors.epub import extract_epub
+from reshelf.extractors.pdf import extract_pdf
+from reshelf.metadata.isbn import find_isbns
+from reshelf.metadata.normalization import (
     search_author,
     short_title,
     title_from_filename,
 )
-from book_organizer.scanner.hashing import sha256_file
-from book_organizer.scanner.scanner import iter_files
+from reshelf.scanner.hashing import sha256_file
+from reshelf.scanner.scanner import iter_files
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -252,7 +252,7 @@ def match(
     """Match identified files against Open Library."""
     cfg = load_config(root)
     client = None if offline else httpx.Client(
-        headers={"User-Agent": f"book-organizer/{__version__}"}
+        headers={"User-Agent": f"reshelf/{__version__}"}
     )
     providers = _build_providers(cfg, client)
     if not providers:
@@ -383,7 +383,7 @@ def report(
     if as_json:
         typer.echo(_json.dumps(rep, indent=2))
         return
-    table = Table(title="book-organizer report")
+    table = Table(title="reshelf report")
     table.add_column("Metric")
     table.add_column("Count", justify="right")
     for key, value in rep.items():
@@ -423,7 +423,7 @@ def commit(
     reports_dir = cfg.library.root / "reports"
     plan_path = plan_file or _latest_plan(reports_dir)
     if plan_path is None:
-        typer.echo("no plan found; run `book-organizer plan` first", err=True)
+        typer.echo("no plan found; run `reshelf plan` first", err=True)
         raise typer.Exit(1)
     plan_data = _json.loads(Path(plan_path).read_text())
     with Database(cfg.database.path) as db:
@@ -473,7 +473,7 @@ def calibre_export(
     reports_dir = cfg.library.root / "reports"
     journal_files = sorted(reports_dir.glob("commit-*.json"))
     if not journal_files:
-        typer.echo("no commit journal found; run `book-organizer commit` first", err=True)
+        typer.echo("no commit journal found; run `reshelf commit` first", err=True)
         raise typer.Exit(1)
     journals = [_json.loads(p.read_text()) for p in journal_files]
 

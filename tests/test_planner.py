@@ -1,8 +1,8 @@
 import json
 
-from book_organizer.db.database import Database
-from book_organizer.metadata.models import Author, Candidate, Edition, Work
-from book_organizer.planner.planner import generate_plan
+from reshelf.db.database import Database
+from reshelf.metadata.models import Author, Candidate, Edition, Work
+from reshelf.planner.planner import generate_plan
 
 
 def test_generate_plan_actions(tmp_path):

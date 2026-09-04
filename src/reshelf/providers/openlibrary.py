@@ -1,6 +1,6 @@
-from book_organizer.metadata.models import Author, Candidate, Edition, Work
-from book_organizer.metadata.normalization import normalize_language
-from book_organizer.providers.base import MetadataProvider
+from reshelf.metadata.models import Author, Candidate, Edition, Work
+from reshelf.metadata.normalization import normalize_language
+from reshelf.providers.base import MetadataProvider
 
 BASE = "https://openlibrary.org"
 

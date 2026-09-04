@@ -1,8 +1,8 @@
 import pytest
 
-from book_organizer.ai.prompts import build_prompt
-from book_organizer.ai.resolver import AIDecision, AIError, parse_decision
-from book_organizer.metadata.models import Author, Candidate, Edition, Work
+from reshelf.ai.prompts import build_prompt
+from reshelf.ai.resolver import AIDecision, AIError, parse_decision
+from reshelf.metadata.models import Author, Candidate, Edition, Work
 
 
 def _cands():

@@ -2,8 +2,8 @@ import json
 
 from typer.testing import CliRunner
 
-from book_organizer.cli import app
-from book_organizer.providers.cache import FileCache
+from reshelf.cli import app
+from reshelf.providers.cache import FileCache
 from tests.helpers import make_epub, make_pdf
 from tests.test_cli import OL_ISBN_RESPONSE
 

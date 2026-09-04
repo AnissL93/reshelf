@@ -1,7 +1,7 @@
 import pytest
 
-from book_organizer.extractors.base import ExtractionError
-from book_organizer.extractors.epub import extract_epub
+from reshelf.extractors.base import ExtractionError
+from reshelf.extractors.epub import extract_epub
 from tests.helpers import make_epub
 
 

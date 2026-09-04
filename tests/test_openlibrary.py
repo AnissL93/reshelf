@@ -1,8 +1,8 @@
 import httpx
 import pytest
 
-from book_organizer.providers.cache import FileCache
-from book_organizer.providers.openlibrary import OpenLibraryProvider
+from reshelf.providers.cache import FileCache
+from reshelf.providers.openlibrary import OpenLibraryProvider
 
 ISBN_RESPONSE = {
     "ISBN:9780765382030": {

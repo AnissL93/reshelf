@@ -1,7 +1,7 @@
 import httpx
 
-from book_organizer.providers.cache import FileCache
-from book_organizer.providers.douban import DoubanProvider
+from reshelf.providers.cache import FileCache
+from reshelf.providers.douban import DoubanProvider
 
 ISBN_RESPONSE = {
     "id": "2567698",

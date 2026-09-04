@@ -2,9 +2,9 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
-from book_organizer.extractors.base import ExtractedMetadata, ExtractionError
-from book_organizer.metadata.isbn import find_isbns
-from book_organizer.metadata.normalization import clean_text, normalize_language
+from reshelf.extractors.base import ExtractedMetadata, ExtractionError
+from reshelf.metadata.isbn import find_isbns
+from reshelf.metadata.normalization import clean_text, normalize_language
 
 _CONTAINER_NS = "{urn:oasis:names:tc:opendocument:xmlns:container}"
 _OPF_NS = "{http://www.idpf.org/2007/opf}"

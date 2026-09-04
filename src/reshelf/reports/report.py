@@ -1,4 +1,4 @@
-from book_organizer.db.database import Database
+from reshelf.db.database import Database
 
 
 def build_report(db: Database) -> dict:

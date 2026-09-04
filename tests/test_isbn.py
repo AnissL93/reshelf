@@ -1,4 +1,4 @@
-from book_organizer.metadata.isbn import (
+from reshelf.metadata.isbn import (
     find_isbns,
     is_valid_isbn10,
     is_valid_isbn13,
