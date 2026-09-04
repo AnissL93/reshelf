@@ -4,8 +4,10 @@ Organize large collections of EPUB/PDF ebooks: scan, extract metadata,
 match against Open Library, detect duplicates, and produce a reviewable
 organization plan — without ever modifying your original files.
 
-See `spec.md` for the full specification. Current status: MVP (spec §33) —
-no AI resolution, no file mutation; `plan` is the terminal step.
+See `spec.md` for the full specification. Pipeline: scan → extract →
+match (Douban + Open Library) → AI resolve → report → plan → commit,
+with rollback. The only write steps are `commit` (copies matched books
+into `library/`; moves are opt-in flags) and `rollback` (undoes a commit).
 
 ## Install
 
@@ -78,7 +80,23 @@ land in confidence bands: exact-ISBN and high-confidence matches become
 MATCHED; ambiguous ones go to REVIEW; the rest stay UNRESOLVED. All API
 responses are cached under `cache/` for 30 days.
 
-### 5. Report
+### 5. AI-resolve ambiguous matches (optional)
+
+```bash
+book-organizer resolve --root /mnt/data/Books
+book-organizer resolve --root /mnt/data/Books --limit 20            # sample first
+book-organizer resolve --root /mnt/data/Books --include-unresolved  # also retry UNRESOLVED
+```
+
+Asks Claude (via the `claude` CLI — uses your Claude Code subscription, no
+API key needed) to judge books the deterministic matcher left in REVIEW:
+translated titles, transliterated authors, marketing-subtitle noise. The
+AI only picks among real provider candidates — it can never invent ISBNs
+or metadata — its confidence is capped below auto-accept, and its
+reasoning is stored in each match's evidence trail. Model is configurable
+(`ai.model` in config.yaml, default `haiku`).
+
+### 6. Report
 
 ```bash
 book-organizer report --root /mnt/data/Books
@@ -96,17 +114,48 @@ unresolved               44
 errors                    3
 ```
 
-### 6. Generate a plan (dry-run)
+### 7. Generate a plan
 
 ```bash
 book-organizer plan --root /mnt/data/Books
 ```
 
-Writes `reports/plan-<id>.json` describing what *would* be done — `import`
-for matched files, `mark_duplicate`, `quarantine` — each action carrying
-`preconditions` (sha256/size/mtime) so a future commit can verify nothing
-changed since planning. **This is the last step in the MVP: no command
-modifies, moves, or deletes your ebook files.**
+Writes `reports/plan-<id>.json` describing what commit *would* do —
+`import` for matched files, `mark_duplicate`, `quarantine` — each action
+carrying `preconditions` (sha256/size/mtime) so commit can verify nothing
+changed since planning. Planning itself never touches your files.
+
+### 8. Commit the plan
+
+```bash
+book-organizer commit --root /mnt/data/Books --dry-run   # preview
+book-organizer commit --root /mnt/data/Books             # execute imports
+```
+
+Executes the latest plan (or `--plan PATH`). Matched books are **copied**
+(never moved) into `library/{author}/{title} ({year})/{title}.ext`;
+originals stay exactly where they are. Each file's sha256/size/mtime is
+re-verified first — anything changed since planning is skipped and
+reported. Re-running is safe: already-committed books are skipped.
+
+Two action types genuinely relocate files and are therefore opt-in:
+
+```bash
+book-organizer commit --root /mnt/data/Books --duplicates   # move binary duplicates to duplicates/
+book-organizer commit --root /mnt/data/Books --quarantine   # move unresolved files to quarantine/
+```
+
+Every run writes a journal to `reports/commit-<id>.json`.
+
+### 9. Rollback (if needed)
+
+```bash
+book-organizer rollback <commit-id> --root /mnt/data/Books
+```
+
+Undoes a commit using its journal: deletes the copies it made (cleaning
+up empty directories) and restores any quarantine/duplicate moves. The
+`<commit-id>` is in the journal filename and in commit's output.
 
 ## Configuration
 
@@ -123,6 +172,14 @@ scan:
   recursive: true
 cache:
   ttl_days: 30
+ai:
+  enabled: true
+  model: haiku         # any `claude --model` value: haiku, sonnet, opus
+  timeout_seconds: 180
+providers:
+  douban:
+    enabled: true
+    apikey: "..."      # community key by default; replace with your own
 ```
 
 Only one `book-organizer` process may run against a library at a time
@@ -134,5 +191,5 @@ Only one `book-organizer` process may run against a library at a time
 .venv/bin/pytest        # run the test suite
 ```
 
-Planned next (spec Phase 2): AI `resolve`, review TUI, `commit`/`rollback`,
-Calibre import, and additional metadata providers (Google Books, Crossref).
+Planned next (spec Phase 2): review TUI, metadata write-back, Calibre
+import, and additional metadata providers (Google Books, Crossref).
