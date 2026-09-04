@@ -157,6 +157,24 @@ Undoes a commit using its journal: deletes the copies it made (cleaning
 up empty directories) and restores any quarantine/duplicate moves. The
 `<commit-id>` is in the journal filename and in commit's output.
 
+### 10. Export to Calibre
+
+```bash
+book-organizer calibre-export --root /mnt/data/Books --library "/path/to/Calibre Library" --dry-run
+book-organizer calibre-export --root /mnt/data/Books --library "/path/to/Calibre Library"
+```
+
+`library/` is a plain folder tree, not a Calibre library -- Calibre
+identifies a library by the `metadata.db` at its root and refuses to
+adopt a non-empty folder. This imports the committed books into a
+Calibre library instead, feeding `calibredb` the title, authors, ISBN,
+language, publisher, pubdate, and provider identifiers we already
+matched, rather than letting Calibre guess from file contents.
+
+Points at a new folder to create a library, or an existing one to merge
+into (Calibre skips title/author duplicates by default). **Close Calibre
+first** -- `calibredb` refuses to write to a library while the GUI holds it.
+
 ## Configuration
 
 `config.yaml` in the library root (created by `init`). Notable settings:

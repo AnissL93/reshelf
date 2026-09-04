@@ -18,6 +18,7 @@ from book_organizer.matching.scorer import (
     same_work,
     score_candidate,
 )
+from book_organizer.calibre.export import books_to_export, export
 from book_organizer.planner.committer import apply_plan, rollback_journal
 from book_organizer.planner.planner import generate_plan
 from book_organizer.providers.cache import FileCache
@@ -459,6 +460,50 @@ def rollback(
     with Database(cfg.database.path) as db:
         result = rollback_journal(journal, db, cfg.library.root / "library")
     typer.echo(f"reverted={result['reverted']} skipped={result['skipped']}")
+
+
+@app.command("calibre-export")
+def calibre_export(
+    library: Path = typer.Option(..., "--library", help="Calibre library path (metadata.db lives here)"),
+    root: Path = ROOT_OPTION,
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print what would be imported"),
+) -> None:
+    """Import committed books into a Calibre library with their matched metadata."""
+    cfg = load_config(root)
+    reports_dir = cfg.library.root / "reports"
+    journal_files = sorted(reports_dir.glob("commit-*.json"))
+    if not journal_files:
+        typer.echo("no commit journal found; run `book-organizer commit` first", err=True)
+        raise typer.Exit(1)
+    journals = [_json.loads(p.read_text()) for p in journal_files]
+
+    with Database(cfg.database.path) as db:
+        books = books_to_export(db, journals)
+    if not books:
+        typer.echo("no committed books found in library/", err=True)
+        raise typer.Exit(1)
+
+    console = Console()
+    if dry_run:
+        typer.echo(f"would import {len(books)} books into {library}")
+        for b in books[:5]:
+            typer.echo(f"  {b.title} / {b.authors or '?'} -> {Path(b.path).name}")
+        if len(books) > 5:
+            typer.echo(f"  ... and {len(books) - 5} more")
+        return
+
+    with console.status("importing...") as status:
+        def progress(i: int, total: int, book) -> None:
+            status.update(f"[{i}/{total}] {book.title[:60]}")
+
+        result = export(books, str(library), on_progress=progress)
+
+    typer.echo(
+        f"added={len(result['added'])} skipped={len(result['skipped'])} "
+        f"failed={len(result['failed'])}"
+    )
+    for f in result["failed"][:10]:
+        typer.echo(f"  FAILED {Path(f['path']).name}: {f['error'][:120]}", err=True)
 
 
 def main() -> None:
