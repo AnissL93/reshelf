@@ -12,6 +12,7 @@ def test_default_roundtrip(tmp_path):
     assert loaded.matching.review_below == 0.90
     assert loaded.matching.ai_resolve_below == 0.75
     assert loaded.matching.unresolved_below == 0.50
-    assert loaded.scan.formats == ["epub", "pdf"]
+    assert loaded.scan.formats == ["epub", "pdf", "mobi", "azw", "azw3"]
+    assert loaded.library.convert_to_epub is True
     assert loaded.providers.openlibrary.enabled is True
     assert loaded.cache.ttl_days == 30

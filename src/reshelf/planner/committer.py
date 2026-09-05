@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from reshelf.calibre.convert import KINDLE_FORMATS, ConversionError, convert_to_epub
 from reshelf.db.database import Database
 from reshelf.scanner.hashing import sha256_file
 
@@ -58,6 +59,7 @@ def apply_plan(
     dry_run: bool = False,
     do_quarantine: bool = False,
     do_duplicates: bool = False,
+    convert_kindle: bool = True,
 ) -> dict:
     now = datetime.now(timezone.utc)
     commit_id = now.strftime("%Y%m%d-%H%M%S") + "-" + uuid4().hex[:8]
@@ -101,16 +103,39 @@ def apply_plan(
                 if reason:
                     skip(action, reason)
                     continue
-                dest, already = _unique_dest(
-                    dest_for(action, library_dir), action["preconditions"].get("sha256")
+                needs_convert = (
+                    convert_kindle
+                    and Path(action["file"]).suffix.lower() in KINDLE_FORMATS
                 )
+                if needs_convert:
+                    dest = dest_for(action, library_dir).with_suffix(".epub")
+                    already = dest.exists()  # content hashes can't be compared
+                else:
+                    dest, already = _unique_dest(
+                        dest_for(action, library_dir),
+                        action["preconditions"].get("sha256"),
+                    )
                 if not dry_run:
                     if not already:
-                        dest.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(action["file"], dest)
+                        if needs_convert:
+                            try:
+                                convert_to_epub(Path(action["file"]), dest)
+                            except ConversionError as e:
+                                skip(action, f"conversion failed: {e}")
+                                continue
+                        else:
+                            dest.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(action["file"], dest)
                     db.set_status(row["id"], "COMMITTED")
                     db.conn.commit()
-                done.append({"action": "import", "src": action["file"], "dest": str(dest)})
+                done.append(
+                    {
+                        "action": "import",
+                        "src": action["file"],
+                        "dest": str(dest),
+                        "converted": needs_convert,
+                    }
+                )
             elif kind == "quarantine":
                 if not do_quarantine:
                     skip(action, "quarantine disabled (pass --quarantine)")

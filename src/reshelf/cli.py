@@ -28,6 +28,7 @@ from reshelf.reports.report import build_report
 from reshelf.db.database import Database
 from reshelf.extractors.base import ExtractionError
 from reshelf.extractors.epub import extract_epub
+from reshelf.extractors.mobi import extract_mobi
 from reshelf.extractors.pdf import extract_pdf
 from reshelf.metadata.isbn import find_isbns
 from reshelf.metadata.normalization import (
@@ -93,7 +94,13 @@ def scan(
     typer.echo(f"seen={seen} added={added} changed={changed} duplicates={dups}")
 
 
-_EXTRACTORS = {"epub": extract_epub, "pdf": extract_pdf}
+_EXTRACTORS = {
+    "epub": extract_epub,
+    "pdf": extract_pdf,
+    "mobi": extract_mobi,
+    "azw": extract_mobi,
+    "azw3": extract_mobi,
+}
 
 
 @app.command()
@@ -437,6 +444,7 @@ def commit(
             dry_run=dry_run,
             do_quarantine=quarantine,
             do_duplicates=duplicates,
+            convert_kindle=cfg.library.convert_to_epub,
         )
     verb = "would perform" if dry_run else "performed"
     typer.echo(

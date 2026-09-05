@@ -8,6 +8,7 @@ class LibraryConfig(BaseModel):
     root: Path
     incoming: Path
     quarantine: Path
+    convert_to_epub: bool = True  # convert Kindle formats to EPUB on commit
 
 
 class DatabaseConfig(BaseModel):
@@ -16,7 +17,7 @@ class DatabaseConfig(BaseModel):
 
 class ScanConfig(BaseModel):
     recursive: bool = True
-    formats: list[str] = ["epub", "pdf"]
+    formats: list[str] = ["epub", "pdf", "mobi", "azw", "azw3"]
 
 
 class MatchingConfig(BaseModel):

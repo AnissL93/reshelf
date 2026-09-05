@@ -19,12 +19,20 @@ def make_epub(path, title, author, isbn=None, language="en", publisher=None):
     <dc:language>{language}</dc:language>
     {ident}{pub}
   </metadata>
-  <manifest/><spine/>
+  <manifest>
+    <item id="c1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine><itemref idref="c1"/></spine>
 </package>"""
+    chapter = (
+        '<?xml version="1.0"?>'
+        '<html xmlns="http://www.w3.org/1999/xhtml"><body><p>text</p></body></html>'
+    )
     with zipfile.ZipFile(path, "w") as z:
         z.writestr("mimetype", "application/epub+zip")
         z.writestr("META-INF/container.xml", CONTAINER)
         z.writestr("content.opf", opf)
+        z.writestr("chapter1.xhtml", chapter)
     return path
 
 

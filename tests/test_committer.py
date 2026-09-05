@@ -36,16 +36,18 @@ def test_dest_for_sanitizes_and_handles_missing():
     assert "三体" in dest.name
 
 
-def _setup_committed_root(tmp_path, content=b"BOOKDATA"):
+def _setup_committed_root(tmp_path, content=b"BOOKDATA", filename="tbp.epub"):
     """init root, one MATCHED file with edition, generate plan; returns (root, src)."""
     root = tmp_path
     runner.invoke(app, ["init", str(root)])
-    src = root / "incoming" / "tbp.epub"
+    src = root / "incoming" / filename
     src.write_bytes(content)
     cfg = load_config(root)
     with Database(cfg.database.path) as db:
         st = src.stat()
-        fid, _ = db.upsert_file(str(src), st.st_size, int(st.st_mtime), "epub")
+        fid, _ = db.upsert_file(
+            str(src), st.st_size, int(st.st_mtime), src.suffix.lstrip(".")
+        )
         db.set_hash(fid, hashlib.sha256(content).hexdigest())
         from reshelf.metadata.models import Author, Candidate, Edition, Work
 
@@ -115,6 +117,46 @@ def test_commit_is_idempotent(tmp_path):
     assert r.exit_code == 0, r.output
     dests = list((root / "library").rglob("*.epub"))
     assert len(dests) == 1
+
+
+def test_commit_converts_kindle_formats(tmp_path, monkeypatch):
+    root, src = _setup_committed_root(tmp_path, content=b"MOBIDATA", filename="tbp.mobi")
+
+    def fake_convert(source, dest, timeout=600):
+        from pathlib import Path
+
+        Path(dest).parent.mkdir(parents=True, exist_ok=True)
+        Path(dest).write_bytes(b"CONVERTED-EPUB")
+
+    monkeypatch.setattr("reshelf.planner.committer.convert_to_epub", fake_convert)
+    r = runner.invoke(app, ["commit", "--root", str(root)])
+    assert r.exit_code == 0, r.output
+
+    dest = root / "library" / "Liu Cixin" / "The Three-Body Problem (2014)" / "The Three-Body Problem.epub"
+    assert dest.read_bytes() == b"CONVERTED-EPUB"
+    assert src.exists() and src.read_bytes() == b"MOBIDATA"  # original untouched
+
+    journal = json.loads(next((root / "reports").glob("commit-*.json")).read_text())
+    entry = journal["actions"][0]
+    assert entry["converted"] is True and entry["dest"] == str(dest)
+
+
+def test_commit_conversion_failure_skips(tmp_path, monkeypatch):
+    from reshelf.calibre.convert import ConversionError
+
+    root, src = _setup_committed_root(tmp_path, content=b"MOBIDATA", filename="tbp.mobi")
+
+    def broken_convert(source, dest, timeout=600):
+        raise ConversionError("boom")
+
+    monkeypatch.setattr("reshelf.planner.committer.convert_to_epub", broken_convert)
+    r = runner.invoke(app, ["commit", "--root", str(root)])
+    assert r.exit_code == 0, r.output
+    assert "skipped=1" in r.output
+    assert not list((root / "library").rglob("*.epub"))
+    cfg = load_config(root)
+    with Database(cfg.database.path) as db:
+        assert db.conn.execute("SELECT status FROM files").fetchone()["status"] == "MATCHED"
 
 
 def test_rollback_removes_copies(tmp_path):
