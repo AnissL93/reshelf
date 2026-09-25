@@ -37,7 +37,10 @@ Schema:
   "schema": 1,
   "sha256": "…",
   "files": [
-    {"path": "incoming/foo.pdf", "format": "pdf", "size": 0, "mtime": 0}
+    {"path": "incoming/foo.azw3", "format": "azw3", "size": 0, "mtime": 0,
+     "role": "original"},
+    {"path": "derived/<sha>.epub", "format": "epub", "size": 0, "mtime": 0,
+     "role": "converted", "sha256": "<hash of the derived file>"}
   ],
   "metadata": {
     "title": null, "subtitle": null, "authors": [], "translators": [],
@@ -149,7 +152,7 @@ Needed for the library grid; nothing populates `covers/` today.
 |---|---|---|
 | EPUB | cover image referenced by the OPF, read from the zip | 619 |
 | PDF | first page rendered by `pymupdf` (already a dependency) | 1129 |
-| MOBI/AZW3 | none without Calibre — placeholder | 85 |
+| MOBI/AZW3 | placeholder until converted, then from the derived EPUB | 85 |
 | Matched books with no local cover | provider cover URL, cached | — |
 
 Written to `covers/<sha256>.jpg`, longest edge 600px, plus a 200px
@@ -168,6 +171,7 @@ GET    /api/books                     q, status, format, tag, sort, page, page_s
 GET    /api/books/{sha}               sidecar + index-derived paths and candidates
 PATCH  /api/books/{sha}/metadata      {metadata: {...}, write_back: {...}}
 GET    /api/books/{sha}/candidates    ranked candidates from the last match
+POST   /api/books/{sha}/convert       -> job; derives an EPUB (or PDF for DjVu)
 POST   /api/books/{sha}/rematch       {query?: {title, author, isbn}, ai?: bool} -> job id
 POST   /api/books/{sha}/choose        {candidate_id} -> writes sidecar, resolver="human"
 GET    /api/books/{sha}/cover         image bytes (?size=thumb|full)
@@ -184,9 +188,11 @@ GET    /api/settings                  the editable config subset
 PUT    /api/settings
 ```
 
-The **primary file** of a book is the first entry in `files[]` that
-exists on disk, preferring a path under `library/` over one under
-`incoming/`.
+The **primary file** of a book is the entry in `files[]` that exists on
+disk with the highest precedence: `role: "converted"` first (it is the
+readable, metadata-writable one), then a path under `library/`, then
+`incoming/`. `GET /api/books/{sha}/file?original=1` always serves the
+original bytes instead.
 
 Because byte-identical duplicates share a hash, `/api/books` returns
 one record per `sha256`, not per path; the duplicate paths are listed
@@ -207,9 +213,11 @@ same Range-capable handler.
 | 2 | `library_file` | Re-derive the library path from the corrected metadata via the planner, rename/move the committed copy, append the operation to the commit journal so `rollback` undoes it. No-op (with a warning in the response) if the book is not committed. |
 | 3 | `embed` | Rewrite metadata inside the **library copy only**. EPUB: rewrite the OPF in the zip, preserving a stored, first `mimetype` entry. PDF: `pymupdf` document metadata. |
 
-Tier 3 returns **422 with a reason** for MOBI, AZW3, DJVU and TXT — no
-writer exists without Calibre. The SPA disables the checkbox for those
-formats using `/api/capabilities`.
+Tier 3 targets the **primary file**, so for a converted book it writes
+into the derived EPUB. For an unconverted MOBI, AZW3, DJVU or TXT it
+returns **422 with `reason: "convert_first"`**, and the SPA offers the
+Convert action inline rather than a dead checkbox. Writable formats
+come from `/api/capabilities`.
 
 Defaults for the two checkboxes come from `write_back.*` in config.
 
@@ -217,7 +225,50 @@ Defaults for the two checkboxes come from `write_back.*` in config.
 settable from the UI. `move` updates `files[].path` in the sidecar and
 journals the move.
 
-## 7. Fix metadata
+## 7. Conversion
+
+Makes Kindle, plain-text and DjVu books first-class: readable by the
+sub-project B reader, and writable by tier-3 embed.
+
+| Input | Output | Tool | Files |
+|---|---|---|---|
+| AZW3 / KF8 | EPUB | `mobi` emits an EPUB directly | 18 |
+| MOBI6 | EPUB | `mobi` emits HTML + resources; assembled by `epub_writer` | 67 |
+| TXT | EPUB | wrapped in a single XHTML chapter by `epub_writer` | 5 |
+| DJVU | PDF | `ddjvu -format=pdf` (djvulibre) | 3 |
+
+DjVu is scanned page images; an EPUB of full-page JPEGs would be large
+and unsearchable, so PDF is the honest target and it inherits pymupdf
+metadata writing. `ddjvu` is a system binary (`djvulibre-bin`) and must
+be installed in the sub-project C image; absent, the API reports the
+DjVu converter as unavailable rather than failing at run time.
+
+`reshelf/convert/epub_writer.py` builds minimal valid EPUB 3 —
+`mimetype` stored first and uncompressed, `META-INF/container.xml`,
+OPF, nav. The same zip surgery is needed by tier-3 embed to rewrite an
+existing OPF, so one module serves both and no EPUB library is added.
+
+**Trigger: per-book button only.** `POST /api/books/{sha}/convert`
+enqueues a `convert` job; the SPA renders it inline on the book page.
+
+```
+# ponytail: per-book conversion only. Add a bulk job if clicking
+# through 90 books ever becomes the annoying part.
+```
+
+Output goes to `<root>/<convert.dir>/<sha256>.<ext>` (default
+`derived/`, added to the `init` directory layout). The original is
+never deleted or modified. On success the derived file is appended to
+`files[]` with `role: "converted"`; the book stays keyed by the
+**original** `sha256`, so metadata and annotations are untouched.
+Re-running conversion replaces the derived file and its entry
+idempotently.
+
+The `mobi` package is GPL-3.0. Reshelf is self-hosted and not
+distributed, so this is a deliberate accepted risk; revisit if reshelf
+is ever published.
+
+## 8. Fix metadata
 
 `POST /api/books/{sha}/rematch` enqueues a job — one code path, so it
 inherits provider rate limiting, cancellation and logging. The SPA
@@ -246,7 +297,7 @@ AI provider in Settings", and no code path contacts a model.
 - `claude-cli` — the existing subscription-based path in `ai/resolver.py`
 - `api` — `ai.api_key` (or `RESHELF_AI_API_KEY`), `ai.model`, `ai.base_url`
 
-## 8. Job runner
+## 9. Job runner
 
 `reshelf/web/jobs.py`: a `jobs` table plus **one** worker thread
 consuming a `queue.Queue`. One job runs at a time; the single thread
@@ -266,9 +317,9 @@ consuming a `queue.Queue`. One job runs at a time; the single thread
   render the diff, and confirm before the job is accepted.
 
 Exposed commands: `scan`, `extract`, `match`, `resolve`, `plan`,
-`commit`, `rollback`, `reindex`, `rematch`.
+`commit`, `rollback`, `reindex`, `rematch`, `convert`.
 
-## 9. SPA
+## 10. SPA
 
 React + Vite, built to static assets served by FastAPI. No SSR.
 
@@ -284,7 +335,7 @@ Every scanned book appears, matched or not, badged by status —
 including the unresolved majority. The 1,841 files on disk collapse to
 fewer records once byte-identical duplicates share a hash.
 
-## 10. Config additions
+## 11. Config additions
 
 ```yaml
 metadata:
@@ -292,6 +343,9 @@ metadata:
   dir: metadata
 library:
   commit_mode: copy     # copy | move
+convert:
+  dir: derived
+  timeout: 300
 web:
   host: 127.0.0.1
   port: 8080
@@ -305,7 +359,7 @@ write_back:
   embed: false
 ```
 
-## 11. Testing
+## 12. Testing
 
 pytest, matching the existing suite's style. No JS test framework.
 
@@ -316,12 +370,17 @@ pytest, matching the existing suite's style. No JS test framework.
 - `test_pipeline.py` — progress callback contract, `JobCancelled`
 - `test_jobs.py` — enqueue, run, cancel, interrupted-on-startup
 - `test_covers.py` — EPUB and PDF extraction, MOBI placeholder
+- `test_convert.py` — AZW3 and MOBI6 to EPUB, TXT to EPUB, DjVu
+  skipped when `ddjvu` is absent, idempotent re-conversion, derived
+  entry appended to `files[]` without changing the book key
+- `test_epub_writer.py` — output opens as a valid EPUB, `mimetype`
+  stored first and uncompressed
 - `test_writeback.py` — EPUB OPF rewrite round trip, PDF via pymupdf,
   422 for MOBI/AZW3/DJVU/TXT
 - `test_api_*.py` — routes via httpx ASGI transport
 - Existing CLI tests are the regression net for the pipeline refactor.
 
-## 12. Known ceilings
+## 13. Known ceilings
 
 - Hash keying means a re-downloaded copy of a book gets a new hash and
   orphans its sidecar. On scan, a changed hash at a known path offers
@@ -331,14 +390,14 @@ pytest, matching the existing suite's style. No JS test framework.
 - Sidecar and index can drift if a write is interrupted between the
   two; `reindex` is the repair.
 
-## 13. Spec amendments
+## 14. Spec amendments
 
 - `spec.md` §3.3 — "Originals must be preserved" becomes "preserved by
   default; `library.commit_mode: move` is an explicit opt-in".
 - `spec.md` §18 — SQLite is a derived, rebuildable index, not the
   system of record. Sidecar schema (§2.1 here) is added as the record.
 
-## 14. Definition of done
+## 15. Definition of done
 
 1. `reshelf serve --root <root>` starts, and `http://127.0.0.1:8080`
    lists every scanned book with covers, search and filters.
@@ -348,10 +407,13 @@ pytest, matching the existing suite's style. No JS test framework.
 3. A metadata edit persists to its sidecar, survives a re-run of
    `match`, and optionally renames the library copy (reversible via
    `rollback`) and embeds into EPUB/PDF.
-4. "Fix metadata" returns candidates for an unresolved book and a
+4. Converting an AZW3, a MOBI and a TXT produces a readable EPUB under
+   `derived/`, leaves the original untouched, and makes tier-3 embed
+   succeed on that book where it previously returned 422.
+5. "Fix metadata" returns candidates for an unresolved book and a
    chosen candidate sticks.
-5. With no AI configured, the app is fully usable and contacts no
+6. With no AI configured, the app is fully usable and contacts no
    model; configuring a provider enables the AI judge.
-6. Every pipeline stage runs from the UI with live progress and
+7. Every pipeline stage runs from the UI with live progress and
    cancellation, and `commit` is reachable only through a previewed plan.
-7. The existing CLI and its test suite still pass unchanged.
+8. The existing CLI and its test suite still pass unchanged.

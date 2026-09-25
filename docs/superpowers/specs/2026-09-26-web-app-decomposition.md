@@ -19,7 +19,7 @@ dependency.
 |---|---|
 | Deployment | Local, single user, Docker. No auth, no user model. |
 | Frontend | FastAPI JSON API + React/Vite SPA. |
-| Calibre | **Not a dependency.** No `ebook-convert`, no `calibredb` in the web app or image. |
+| Calibre | **Not a dependency.** No `ebook-convert`, no `calibredb` in the web app or image. Kindle/TXT conversion uses the `mobi` package; DjVu uses `ddjvu`. |
 | Pipeline control | Driven from the UI via an in-process, single-slot job runner. |
 | Source of truth | Per-book JSON sidecar. SQLite is a deletable, rebuildable index. |
 | AI | Optional. Off unless a provider is configured. |
@@ -35,6 +35,8 @@ dependency.
 | AZW3 | 18 |
 | TXT | 5 |
 | DJVU | 3 |
+
+Total 1841 files, collapsing by content hash to fewer book records.
 
 PDF is the dominant reading format. This drives the reader design: a
 first-class pdf.js path, not an EPUB-first one.
@@ -59,7 +61,7 @@ Spec: `2026-09-26-web-app-a-library.md`
 
 pdf.js for PDF, foliate-js for EPUB/MOBI/AZW3, plain text for TXT.
 Highlights, notes, bookmarks, reading progress — all persisted into
-the sidecar. DJVU (3 files) is download-only.
+the sidecar. Books converted in A are read via their derived EPUB.
 
 Depends on A's file-serving and sidecar layer.
 
