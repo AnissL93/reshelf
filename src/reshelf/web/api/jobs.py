@@ -7,8 +7,8 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from sse_starlette.sse import EventSourceResponse
 
-from reshelf.planner.committer import dest_for
-from reshelf.web.deps import AppState, get_state
+from reshelf.planner.committer import dest_for, unique_dest
+from reshelf.web.deps import AppState, get_state, resolve_inside_root
 from reshelf.web.jobs import TERMINAL, UnknownCommand
 from reshelf.web.schemas import JobCreate
 
@@ -145,6 +145,14 @@ async def job_events(job_id: int, state: AppState = Depends(get_state)):
 # real if the UI can show the user what a plan/journal actually contains
 # before they confirm - these two GETs exist for exactly that, and touch
 # nothing.
+#
+# `plan_id`/`commit_id` are caller-supplied path parameters used to build a
+# filename. FastAPI's default `str` converter already refuses a `/` in
+# them, but that safety is a property of routing, not of this code - it
+# would evaporate behind a reverse proxy that forwards an un-normalised
+# path, or if the route ever grows a `:path` converter. resolve_inside_root
+# (shared with books.py's file-serving guard) is the actual containment
+# check, done here regardless of what routing currently allows.
 
 
 def _reports_dir(state: AppState) -> Path:
@@ -153,24 +161,29 @@ def _reports_dir(state: AppState) -> Path:
 
 @router.get("/plans/{plan_id}")
 def get_plan(plan_id: str, state: AppState = Depends(get_state)) -> dict:
-    path = _reports_dir(state) / f"plan-{plan_id}.json"
-    if not path.exists():
+    path = resolve_inside_root(_reports_dir(state), f"plan-{plan_id}.json")
+    if path is None:
         raise HTTPException(404, "no such plan")
     plan = json.loads(path.read_text())
     # Annotate each action with the destination the real commit would use,
     # so the preview can show real `src -> dest` rows rather than just the
-    # source file. This mirrors committer.apply_plan's own placement logic
-    # (dest_for for imports; quarantine/duplicates keep their basename) but
-    # never touches the filesystem or the database - a plan can be previewed
-    # any number of times without side effects.
+    # source file. This calls the exact same functions apply_plan itself
+    # calls (dest_for, then unique_dest for the collision suffix) so the
+    # preview and a real commit can never disagree about where a file will
+    # land. unique_dest only stats (and, on a same-named collision, hashes)
+    # an existing file - read-only, so a plan can be previewed any number of
+    # times with no side effects.
     root = Path(state.cfg.library.root)
     targets = {"quarantine": state.cfg.library.quarantine, "mark_duplicate": root / "duplicates"}
     for action in plan.get("actions", []):
         kind = action.get("action")
+        sha256 = (action.get("preconditions") or {}).get("sha256")
         if kind == "import":
-            action["dest"] = str(dest_for(action, root / "library"))
+            dest, _ = unique_dest(dest_for(action, root / "library"), sha256)
+            action["dest"] = str(dest)
         elif kind in targets:
-            action["dest"] = str(targets[kind] / Path(action["file"]).name)
+            dest, _ = unique_dest(targets[kind] / Path(action["file"]).name, sha256)
+            action["dest"] = str(dest)
     return plan
 
 
@@ -196,7 +209,7 @@ def list_journals(state: AppState = Depends(get_state)) -> list[dict]:
 
 @router.get("/journals/{commit_id}")
 def get_journal(commit_id: str, state: AppState = Depends(get_state)) -> dict:
-    path = _reports_dir(state) / f"commit-{commit_id}.json"
-    if not path.exists():
+    path = resolve_inside_root(_reports_dir(state), f"commit-{commit_id}.json")
+    if path is None:
         raise HTTPException(404, "no such journal")
     return json.loads(path.read_text())

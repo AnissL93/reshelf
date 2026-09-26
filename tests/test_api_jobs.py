@@ -4,12 +4,13 @@ import json
 import time
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from reshelf.config import default_config, save_config
 from reshelf.planner.planner import generate_plan
 from reshelf.store.models import Book, FileEntry
-from reshelf.web.api.jobs import job_events
+from reshelf.web.api.jobs import get_journal, get_plan, job_events
 from reshelf.web.app import create_app
 from reshelf.web.jobs import COMMANDS
 
@@ -293,6 +294,26 @@ def test_get_an_unknown_plan_is_404(client):
     assert client.get("/api/plans/does-not-exist").status_code == 404
 
 
+def test_get_plan_refuses_an_id_crafted_to_escape_reports_dir(client):
+    # FastAPI's default `str` path converter already refuses a literal '/'
+    # in {plan_id} over HTTP, so this can't be reached through routing today
+    # - but that's a property of routing, not of get_plan itself. Call the
+    # handler directly (as test_events_stream_disconnect_removes_subscriber
+    # already does elsewhere in this file) so resolve_inside_root's
+    # containment check is pinned regardless of what routing allows.
+    state = client.app.state.reshelf
+    with pytest.raises(HTTPException) as exc:
+        get_plan("../../../../../../etc/passwd", state=state)
+    assert exc.value.status_code == 404
+
+
+def test_get_journal_refuses_an_id_crafted_to_escape_reports_dir(client):
+    state = client.app.state.reshelf
+    with pytest.raises(HTTPException) as exc:
+        get_journal("../../../../../../etc/passwd", state=state)
+    assert exc.value.status_code == 404
+
+
 def test_get_plan_annotates_actions_with_their_destination(client):
     plan_id = _make_plan(client)
     body = client.get(f"/api/plans/{plan_id}").json()
@@ -300,6 +321,25 @@ def test_get_plan_annotates_actions_with_their_destination(client):
     [action] = body["actions"]
     assert action["action"] == "import"
     assert action["dest"].endswith("Liu Cixin/The Three-Body Problem (2014)/The Three-Body Problem.epub")
+
+
+def test_get_plan_dest_matches_what_a_real_commit_would_produce_on_a_collision(client):
+    # dest_for alone would show the un-suffixed path here - the preview must
+    # run the same unique_dest collision logic apply_plan does, or it shows
+    # the user a destination the commit will not actually use.
+    state = client.app.state.reshelf
+    plan_id = _make_plan(client)
+    dest = (
+        state.root / "library" / "Liu Cixin" / "The Three-Body Problem (2014)"
+        / "The Three-Body Problem.epub"
+    )
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(b"a different file already lives here")  # sha256 mismatch forces a suffix
+
+    body = client.get(f"/api/plans/{plan_id}").json()
+    [action] = body["actions"]
+    assert action["dest"] != str(dest)
+    assert action["dest"] == str(dest.with_name("The Three-Body Problem-aaa.epub"))
 
 
 def test_journals_list_is_empty_with_no_commits(client):

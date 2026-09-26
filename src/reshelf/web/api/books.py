@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from reshelf.covers import cover_path, thumb_path
 from reshelf.store import index
 from reshelf.store.models import now as models_now
-from reshelf.web.deps import AppState, get_state
+from reshelf.web.deps import AppState, get_state, resolve_inside_root
 from reshelf.web.schemas import (
     BookDetail,
     BookList,
@@ -201,25 +201,6 @@ _RANGE = re.compile(r"^bytes=(\d*)-(\d*)$")
 _CHUNK = 1 << 18  # 256 KiB
 
 
-def _resolve_inside_root(root: Path, candidate: str) -> Path | None:
-    """Never serve a path outside the library root, whatever the sidecar says.
-
-    The sidecar is a user-editable JSON file - it can be hand-edited,
-    restored from a backup, or corrupted to point anywhere. Path.resolve()
-    on both sides collapses symlinks and '..' before the containment
-    check, so a symlink under the root pointing outside it is caught too.
-    """
-    path = Path(candidate)
-    if not path.is_absolute():
-        path = root / path
-    try:
-        path = path.resolve()
-        path.relative_to(root.resolve())
-    except (OSError, ValueError):
-        return None
-    return path if path.is_file() else None
-
-
 def _parse_range(header: str, size: int) -> tuple[int, int] | None | Literal[False]:
     """(start, end) inclusive; None means 'serve the whole thing'; False means 416."""
     match = _RANGE.match(header.strip())
@@ -261,7 +242,7 @@ def get_file(
     )
     if entry is None:
         raise HTTPException(404, "no file recorded for this book")
-    path = _resolve_inside_root(Path(state.cfg.library.root), entry.path)
+    path = resolve_inside_root(Path(state.cfg.library.root), entry.path)
     if path is None:
         raise HTTPException(404, "file missing or outside the library root")
 

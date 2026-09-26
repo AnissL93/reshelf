@@ -38,7 +38,7 @@ def verify_preconditions(action: dict) -> str | None:
     return None
 
 
-def _unique_dest(dest: Path, sha256: str | None) -> tuple[Path, bool]:
+def unique_dest(dest: Path, sha256: str | None) -> tuple[Path, bool]:
     """Resolve collisions. Returns (dest, already_done)."""
     if not dest.exists():
         return dest, False
@@ -70,7 +70,7 @@ def apply_plan(
 
     def move_into(action: dict, target_dir: Path) -> None:
         src = Path(action["file"])
-        dest, already = _unique_dest(
+        dest, already = unique_dest(
             Path(target_dir) / src.name, action["preconditions"].get("sha256")
         )
         if already:
@@ -102,7 +102,7 @@ def apply_plan(
                 if reason:
                     skip(action, reason)
                     continue
-                dest, already = _unique_dest(
+                dest, already = unique_dest(
                     dest_for(action, library_dir),
                     action["preconditions"].get("sha256"),
                 )

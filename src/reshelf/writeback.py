@@ -28,7 +28,7 @@ from uuid import uuid4
 import pymupdf as fitz
 
 from reshelf.convert.epub_writer import UnsupportedEpub, rewrite_metadata
-from reshelf.planner.committer import _unique_dest, dest_for
+from reshelf.planner.committer import dest_for, unique_dest
 from reshelf.store import index
 from reshelf.store.models import Book, BookMetadata, FileEntry
 
@@ -151,7 +151,7 @@ def rename_library_copy(cfg, db, store, sha256: str) -> str | None:
             "publication_date": m.pubdate,
         },
     }
-    new, already = _unique_dest(dest_for(action, library_dir), sha256)
+    new, already = unique_dest(dest_for(action, library_dir), sha256)
     if new == old:
         return str(old)
 

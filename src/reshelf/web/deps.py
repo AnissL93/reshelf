@@ -44,3 +44,25 @@ def build_state(root: Path) -> AppState:
 
 def get_state(request: Request) -> AppState:
     return request.app.state.reshelf
+
+
+def resolve_inside_root(root: Path, candidate: str) -> Path | None:
+    """Never serve a path outside `root`, whatever the caller-supplied id/path says.
+
+    Shared by books.py (a sidecar's file path - user-editable JSON, so it can
+    point anywhere) and jobs.py (a plan/journal id taken straight off a URL
+    path parameter). Path.resolve() on both sides collapses symlinks and
+    '..' before the containment check, so a symlink under root pointing
+    outside it is caught too - and, on the jobs.py side, so is an id crafted
+    to contain '/' or '..' if this ever runs somewhere FastAPI's own path
+    converter isn't already refusing a '/' in the parameter for it.
+    """
+    path = Path(candidate)
+    if not path.is_absolute():
+        path = root / path
+    try:
+        path = path.resolve()
+        path.relative_to(root.resolve())
+    except (OSError, ValueError):
+        return None
+    return path if path.is_file() else None
