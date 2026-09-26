@@ -1,6 +1,7 @@
 import json
 import os
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -138,10 +139,17 @@ class Database:
                 f"another reshelf instance holds {self.lock_path} "
                 "(delete it if that process crashed)"
             ) from None
-        self.conn = sqlite3.connect(self.path, timeout=30)
+        self.conn = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
+        # One process holds the lock file, but FastAPI request threads and the
+        # job worker share this connection. SQLite serialises individual
+        # statements on its own; this lock only keeps a *sequence* of
+        # statements (e.g. read-modify-write, or a multi-table update) from
+        # interleaving with another thread's sequence. Callers doing more
+        # than one statement that must be seen atomically must hold it.
+        self.lock = threading.RLock()
 
     def init_schema(self) -> None:
         self.conn.executescript(SCHEMA)
