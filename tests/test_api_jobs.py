@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 import json
 import time
 
@@ -5,7 +7,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from reshelf.config import default_config, save_config
+from reshelf.web.api.jobs import job_events
 from reshelf.web.app import create_app
+from reshelf.web.jobs import COMMANDS
 
 
 @pytest.fixture
@@ -16,15 +20,6 @@ def client(tmp_path):
     save_config(cfg, tmp_path)
     with TestClient(create_app(tmp_path)) as c:
         yield c
-
-
-# httpx's TestClient has no default read timeout, and iter_lines() can
-# block indefinitely on a stalled connection between lines already
-# received - the in-loop deadline checks below only run between lines that
-# already arrived, so they can't catch that case. This bounds it: a
-# regression that stops the stream entirely fails the test instead of
-# hanging the whole suite.
-STREAM_TIMEOUT = 20.0
 
 
 def wait(client, job_id, timeout=10):
@@ -92,19 +87,45 @@ def test_get_an_unknown_job_is_404(client):
     assert client.get("/api/jobs/9999").status_code == 404
 
 
-def test_delete_cancels(client):
-    job_id = client.post("/api/jobs", json={"command": "scan"}).json()["job_id"]
-    client.delete(f"/api/jobs/{job_id}")
-    assert client.get(f"/api/jobs/{job_id}").json()["status"] in (
-        "cancelled", "done"  # a scan of an empty folder may beat the cancel
-    )
+def _register_slow_command(monkeypatch):
+    # A command that is provably still running (it reports progress in a
+    # loop for up to 2s) rather than one that may already be finished by
+    # the time a test gets around to checking it - the same technique
+    # tests/test_jobs.py::test_cancel_stops_a_running_job uses.
+    def slow(cfg, db, store, args, progress):
+        for n in range(200):
+            progress(n, 200, "working")
+            time.sleep(0.01)
+
+    monkeypatch.setitem(COMMANDS, "slow", slow)
 
 
+def test_delete_cancels(client, monkeypatch):
+    # A plain "scan" of an empty folder can complete before the DELETE
+    # lands, making "cancelled" vs. "done" a coin flip - not a tolerant
+    # test, just a flaky one. Gate it instead on a job that is provably
+    # still running when we cancel it, so the outcome is deterministic.
+    _register_slow_command(monkeypatch)
+    state = client.app.state.reshelf
+    job_id = client.post("/api/jobs", json={"command": "slow", "args": {}}).json()[
+        "job_id"
+    ]
+
+    deadline = time.monotonic() + 5
+    while state.runner.get(job_id)["status"] != "running":
+        if time.monotonic() > deadline:
+            raise AssertionError("job never reached running")
+        time.sleep(0.01)
+
+    r = client.delete(f"/api/jobs/{job_id}")
+    assert r.json()["cancelled"] is True
+    assert wait(client, job_id)["status"] == "cancelled"
+
+
+@pytest.mark.timeout(20)
 def test_events_stream_ends_with_a_terminal_status(client):
     job_id = client.post("/api/jobs", json={"command": "scan"}).json()["job_id"]
-    with client.stream(
-        "GET", f"/api/jobs/{job_id}/events", timeout=STREAM_TIMEOUT
-    ) as response:
+    with client.stream("GET", f"/api/jobs/{job_id}/events") as response:
         assert response.headers["content-type"].startswith("text/event-stream")
         last = None
         deadline = time.monotonic() + 10
@@ -139,6 +160,7 @@ def _wait_for_no_subscribers(state, job_id, timeout=5):
     )
 
 
+@pytest.mark.timeout(20)
 def test_events_stream_self_heals_when_the_terminal_publish_is_swallowed(client):
     # Simulate the hazard: _finish() still writes the terminal status to the
     # DB, but the subscriber notify that normally follows never happens (the
@@ -152,9 +174,7 @@ def test_events_stream_self_heals_when_the_terminal_publish_is_swallowed(client)
     try:
         job_id = client.post("/api/jobs", json={"command": "scan"}).json()["job_id"]
         started = time.monotonic()
-        with client.stream(
-            "GET", f"/api/jobs/{job_id}/events", timeout=STREAM_TIMEOUT
-        ) as response:
+        with client.stream("GET", f"/api/jobs/{job_id}/events") as response:
             last = None
             deadline = time.monotonic() + 10
             for line in response.iter_lines():
@@ -178,18 +198,49 @@ def test_events_stream_self_heals_when_the_terminal_publish_is_swallowed(client)
         state.runner._publish = original_publish
 
 
-def test_events_stream_disconnect_removes_subscriber(client):
+@pytest.mark.timeout(20)
+def test_events_stream_disconnect_removes_subscriber(client, monkeypatch):
     # A client that stops reading (closes the connection, navigates away)
     # must not leave its subscriber queue registered forever either.
+    #
+    # This can't be exercised through TestClient: per its own source
+    # (starlette.testclient's `send` callback writes every chunk into an
+    # in-memory BytesIO, and `handle_request` doesn't return until the
+    # whole ASGI call - i.e. the whole SSE stream - has finished), it
+    # always waits for the entire response before handing back anything,
+    # so there is no way to "read one line and stop" from a genuinely
+    # still-open stream through it; reading only the first line only
+    # looks like a disconnect, and passes even with disconnect handling
+    # entirely removed, because the stream had already finished by then.
+    #
+    # A real disconnect, per sse_starlette's own internals, cancels the
+    # task that is awaiting body_iterator's `__anext__()` (see the
+    # `_ping` docstring in sse_starlette/sse.py for its own description of
+    # this). Reproduce that directly against the endpoint's generator, on
+    # a job that is provably still running so the cancellation lands on a
+    # genuinely in-progress wait rather than an already-finished stream.
+    _register_slow_command(monkeypatch)
     state = client.app.state.reshelf
-    job_id = client.post("/api/jobs", json={"command": "scan"}).json()["job_id"]
-    with client.stream(
-        "GET", f"/api/jobs/{job_id}/events", timeout=STREAM_TIMEOUT
-    ) as response:
-        # Read only the first line, then fall out of the `with` block
-        # without draining the stream - that's the disconnect.
-        next(response.iter_lines())
+    job_id = client.post("/api/jobs", json={"command": "slow", "args": {}}).json()[
+        "job_id"
+    ]
+
+    async def disconnect_mid_stream():
+        response = await job_events(job_id, state=state)
+        gen = response.body_iterator
+        await gen.__anext__()  # the initial snapshot: job is genuinely running
+        task = asyncio.ensure_future(gen.__anext__())
+        await asyncio.sleep(0)  # let it actually start awaiting the next event
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(disconnect_mid_stream())
     _wait_for_no_subscribers(state, job_id)
+    # The disconnect only ended this one subscriber's stream, not the job
+    # itself - let the still-running "slow" job wind down quickly instead
+    # of tying up the worker (and this test's teardown) for its full 2s.
+    state.runner.cancel(job_id)
 
 
 def test_finish_logs_when_the_terminal_publish_fails(client, caplog):

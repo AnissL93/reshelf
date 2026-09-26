@@ -22,7 +22,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "pytest-timeout>=2.3"]
 
 [project.scripts]
 reshelf = "reshelf.cli:main"
@@ -32,3 +32,15 @@ packages = ["src/reshelf"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# A global backstop so a hung test fails the run instead of blocking it
+# forever - generous enough that no legitimate test should ever trip it.
+# Streaming tests set a tighter @pytest.mark.timeout on top of this.
+timeout = 60
+# "signal" (the default) relies on a signal handler being able to interrupt
+# whatever the main thread is blocked in, and cannot: reproduced with a
+# genuinely hung SSE stream, where the main thread blocks inside
+# anyio.from_thread's Future.result() (a Condition.wait()) - "signal" printed
+# a thread dump but never actually aborted the test; "thread" (a watchdog
+# thread that hard-exits the process) did, in ~2s. This suite's SSE tests
+# are exactly this shape, so "thread" is the one that actually protects it.
+timeout_method = "thread"
