@@ -142,6 +142,11 @@ def test_resolve_applies_ai_decision(tmp_path, monkeypatch):
     runner.invoke(app, ["match", "--root", str(root), "--offline"])
 
     cfg = load_config(root)
+    # Enable AI for this test (we'll mock the resolver)
+    cfg.ai.provider = "claude-cli"
+    from reshelf.config import save_config
+    save_config(cfg, root)
+
     with Database(cfg.database.path) as db:
         fid = db.conn.execute("SELECT id FROM files").fetchone()["id"]
         # force into the review queue so resolve picks it up
@@ -188,6 +193,11 @@ def test_resolve_null_decision_marks_unresolved(tmp_path, monkeypatch):
     )
     runner.invoke(app, ["match", "--root", str(root), "--offline"])
     cfg = load_config(root)
+    # Enable AI for this test (we'll mock the resolver)
+    cfg.ai.provider = "claude-cli"
+    from reshelf.config import save_config
+    save_config(cfg, root)
+
     with Database(cfg.database.path) as db:
         fid = db.conn.execute("SELECT id FROM files").fetchone()["id"]
         db.set_file_match(fid, None, 0.80, "REVIEW")

@@ -444,7 +444,6 @@ def commit(
             dry_run=dry_run,
             do_quarantine=quarantine,
             do_duplicates=duplicates,
-            convert_kindle=cfg.library.convert_to_epub,
         )
     verb = "would perform" if dry_run else "performed"
     typer.echo(
