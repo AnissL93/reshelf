@@ -1,11 +1,20 @@
+from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from reshelf.covers import cover_path
 from reshelf.store import index
+from reshelf.store.models import now as models_now
 from reshelf.web.deps import AppState, get_state
-from reshelf.web.schemas import BookDetail, BookList, BookListItem
+from reshelf.web.schemas import (
+    BookDetail,
+    BookList,
+    BookListItem,
+    MetadataPatch,
+    WriteBackResult,
+)
+from reshelf.writeback import UnsupportedWriteBack, embed_metadata, rename_library_copy
 
 router = APIRouter(tags=["books"])
 
@@ -99,3 +108,63 @@ def list_tags(state: AppState = Depends(get_state)) -> list[str]:
         ).fetchall()
     tags = {t.strip() for r in rows for t in r["tags"].split(";") if t.strip()}
     return sorted(tags)
+
+
+@router.patch("/books/{sha256}/metadata", response_model=WriteBackResult)
+def patch_metadata(
+    sha256: str,
+    payload: MetadataPatch,
+    state: AppState = Depends(get_state),
+) -> WriteBackResult:
+    with state.db.lock:
+        row = state.db.conn.execute(
+            "SELECT * FROM files WHERE sha256 = ? ORDER BY id LIMIT 1", (sha256,)
+        ).fetchone()
+    if state.store.load(sha256, row["path"] if row else None) is None:
+        raise HTTPException(404, "no such book")
+
+    # Tier 1: always, and it is the source of truth - never rolled back
+    # because a later tier failed.
+    def mutate(book):
+        book.metadata = payload.metadata
+        book.source.resolver = "human"
+        book.source.confidence = 1.0
+        book.source.decided_at = models_now()
+
+    book = state.store.update(sha256, mutate, row["path"] if row else None)
+    with state.db.lock:
+        index.sync(state.db.conn, book)
+
+    warnings: list[str] = []
+    library_file = None
+    embedded = False
+
+    # Tier 3 before tier 2, so embedding targets a stable path - renaming
+    # first would move the file out from under the path we're about to
+    # write into.
+    if payload.write_back.embed:
+        primary = book.primary_file()
+        if primary is None:
+            warnings.append("no file on disk to embed into")
+        else:
+            try:
+                embed_metadata(Path(primary.path), book.metadata)
+                embedded = True
+            except UnsupportedWriteBack as e:
+                raise HTTPException(
+                    422, {"message": str(e), "reason": e.reason}
+                ) from e
+
+    if payload.write_back.library_file:
+        library_file = rename_library_copy(state.cfg, state.db, state.store, sha256)
+        if library_file is None:
+            warnings.append("not committed to library/ yet; nothing to rename")
+        else:
+            book = state.store.load(sha256, library_file)
+
+    return WriteBackResult(
+        sidecar=book.model_dump(mode="json", by_alias=True),
+        library_file=library_file,
+        embedded=embedded,
+        warnings=warnings,
+    )
