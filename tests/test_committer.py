@@ -129,10 +129,33 @@ def test_commit_skips_changed_file(tmp_path):
 
 def test_commit_dry_run_touches_nothing(tmp_path):
     root, src = _setup_committed_root(tmp_path)
+    cfg = load_config(root)
+    sha256 = hashlib.sha256(src.read_bytes()).hexdigest()
+    before = SidecarStore(cfg).load(sha256, str(src)).files
+
     r = runner.invoke(app, ["commit", "--root", str(root), "--dry-run"])
+
     assert r.exit_code == 0, r.output
     assert not (root / "library" / "Liu Cixin").exists()
     assert not list((root / "reports").glob("commit-*.json"))
+    after = SidecarStore(cfg).load(sha256, str(src)).files
+    assert after == before  # dry-run must not touch the sidecar either
+
+
+def test_commit_dry_run_in_move_mode_keeps_the_original_sidecar_entry(tmp_path):
+    """A dry run must not pre-emptively drop the source location from the sidecar."""
+    root, src = _setup_committed_root(tmp_path)
+    cfg = load_config(root)
+    cfg.library.commit_mode = "move"
+    save_config(cfg, root)
+    sha256 = hashlib.sha256(src.read_bytes()).hexdigest()
+
+    r = runner.invoke(app, ["commit", "--root", str(root), "--dry-run"])
+
+    assert r.exit_code == 0, r.output
+    book = SidecarStore(cfg).load(sha256, str(src))
+    assert any(f.path == str(src) for f in book.files)
+    assert src.exists()  # and the file itself was never moved
 
 
 def test_commit_is_idempotent(tmp_path):

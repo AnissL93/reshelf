@@ -599,8 +599,9 @@ def commit(
         do_duplicates=do_duplicates,
         mode=cfg.library.commit_mode,
     )
-    for entry in result["actions"]:
-        _record_committed_path(db, store, entry)
+    if not dry_run:
+        for entry in result["actions"]:
+            _record_committed_path(db, store, entry)
     progress(len(result["actions"]), None, "done")
     return result
 
