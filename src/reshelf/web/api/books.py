@@ -14,7 +14,12 @@ from reshelf.web.schemas import (
     MetadataPatch,
     WriteBackResult,
 )
-from reshelf.writeback import UnsupportedWriteBack, embed_metadata, rename_library_copy
+from reshelf.writeback import (
+    EMBEDDABLE,
+    UnsupportedWriteBack,
+    embed_metadata,
+    rename_library_copy,
+)
 
 router = APIRouter(tags=["books"])
 
@@ -146,6 +151,25 @@ def patch_metadata(
         primary = book.primary_file()
         if primary is None:
             warnings.append("no file on disk to embed into")
+        elif (
+            primary.format in EMBEDDABLE
+            and primary.role != "converted"
+            and "library" not in Path(primary.path).parts
+        ):
+            # Format is fine but the only copy is the incoming/ original -
+            # embed_metadata's own convert_first check would never catch
+            # this, and writing into it would rewrite (and re-hash) the
+            # user's source file. Never let tier 3 reach an original.
+            raise HTTPException(
+                422,
+                {
+                    "message": (
+                        "only a library copy or a converted file can be"
+                        " edited in place; commit it to the library first"
+                    ),
+                    "reason": "not_in_library",
+                },
+            )
         else:
             try:
                 embed_metadata(Path(primary.path), book.metadata)

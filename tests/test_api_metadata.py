@@ -1,3 +1,5 @@
+import hashlib
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -12,13 +14,13 @@ from tests.helpers import make_epub
 SHA = "a" * 64
 
 
-def build(tmp_path, fmt="epub", status="COMMITTED"):
+def build(tmp_path, fmt="epub", status="COMMITTED", location="library"):
     cfg = default_config(tmp_path)
     for sub in ("incoming", "library", "db", "metadata", "derived", "reports", "covers"):
         (tmp_path / sub).mkdir(parents=True, exist_ok=True)
     save_config(cfg, tmp_path)
 
-    path = tmp_path / "library" / f"Old Title.{fmt}"
+    path = tmp_path / location / f"Old Title.{fmt}"
     if fmt == "epub":
         make_epub(path, "Old Title", "Old Author")
     else:
@@ -97,6 +99,39 @@ def test_embed_on_an_unconverted_kindle_file_is_422_with_a_reason(tmp_path):
         )
         assert r.status_code == 422
         assert r.json()["detail"]["reason"] == "convert_first"
+
+
+def test_embed_on_an_incoming_only_book_is_422_and_leaves_the_original_untouched(
+    tmp_path,
+):
+    """A book that is only under incoming/ (never committed) has an EMBEDDABLE
+    format but no safe copy to write into - embedding would rewrite (and
+    re-hash) the user's source file."""
+    _cfg, path = build(tmp_path, status="MATCHED", location="incoming")
+    before = hashlib.sha256(path.read_bytes()).digest()
+    with TestClient(create_app(tmp_path)) as c:
+        r = c.patch(
+            f"/api/books/{SHA}/metadata",
+            json={**PATCH, "write_back": {"embed": True}},
+        )
+        assert r.status_code == 422
+        assert r.json()["detail"]["reason"] == "not_in_library"
+        assert hashlib.sha256(path.read_bytes()).digest() == before
+
+
+def test_embed_and_rename_together_on_an_incoming_only_book_is_422_without_renaming(
+    tmp_path,
+):
+    _cfg, path = build(tmp_path, status="MATCHED", location="incoming")
+    with TestClient(create_app(tmp_path)) as c:
+        r = c.patch(
+            f"/api/books/{SHA}/metadata",
+            json={**PATCH, "write_back": {"embed": True, "library_file": True}},
+        )
+        assert r.status_code == 422
+        assert r.json()["detail"]["reason"] == "not_in_library"
+        assert path.exists()
+        assert not (tmp_path / "library" / "New Title.epub").exists()
 
 
 def test_a_failed_embed_still_leaves_the_sidecar_written(tmp_path):
