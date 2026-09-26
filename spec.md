@@ -142,7 +142,7 @@ quarantine/
 * `copy` (default) - the original stays in `incoming/`, a copy lands in `library/`.
 * `move` - the original is moved into `library/`. This is an explicit opt-in, and the commit journal records it so `rollback` restores the original to its former path.
 
-Scan, extract and match MUST NOT modify anything under `incoming/` in either mode. Writing metadata into a file (write-back tier 3) targets the copy under `library/` or a derived file under `derived/`, never an original.
+Scan, extract and match MUST NOT modify book files under `incoming/` in either mode. With the default `hash` metadata layout, they never write anything to `incoming/`; with `sidecar` or `library` layouts, they additionally write per-book JSON sidecars beside the original file. Writing metadata into a file (write-back tier 3) targets the copy under `library/` or a derived file under `derived/`, never an original.
 
 Files enter `quarantine/` only via a committed plan action, never automatically. A file becomes eligible for a quarantine action when its status is UNRESOLVED after matching (and AI resolution, if enabled) has run.
 
@@ -858,7 +858,7 @@ The database assumes a SINGLE process at a time:
 
 ### The database is derived
 
-As of the web app, SQLite is **not** the system of record. A per-book JSON sidecar (default `metadata/<sha256>.json`) holds the metadata, provenance, reading position and annotations; see the sub-project A spec for its schema. The tables below are a cache of scan results and provider candidates, plus the FTS5 search index and the job queue. The database can be deleted at any time and rebuilt with `reshelf reindex`.
+As of the web app, SQLite is **not** the system of record. A per-book JSON sidecar (default `metadata/<sha256>.json`) holds the metadata, provenance, reading position and annotations; see `docs/superpowers/specs/2026-09-26-web-app-a-library.md` for its schema. The tables below are a cache of scan results and provider candidates, plus the FTS5 search index and the job queue. The database can be deleted at any time and rebuilt with `reshelf reindex`.
 
 ### Suggested schema
 
