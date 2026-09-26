@@ -1,36 +1,17 @@
 import json as _json
-import re
 from pathlib import Path
 from typing import Optional
 
-import httpx
 import typer
 from rich.console import Console
 from rich.table import Table
 
-from reshelf import __version__
-from reshelf.ai.resolver import AIError, ClaudeCLIResolver
 from reshelf.config import default_config, load_config, save_config
-from reshelf.matching.scorer import (
-    LocalBook,
-    band,
-    confidence_from_score,
-    same_work,
-    score_candidate,
-)
 from reshelf.calibre.export import books_to_export, export
 from reshelf.planner.committer import apply_plan, rollback_journal
 from reshelf.planner.planner import generate_plan
-from reshelf.providers.cache import FileCache
-from reshelf.providers.douban import DoubanProvider
-from reshelf.providers.openlibrary import OpenLibraryProvider
 from reshelf.reports.report import build_report
 from reshelf.db.database import Database
-from reshelf.metadata.normalization import (
-    search_author,
-    short_title,
-    title_from_filename,
-)
 from reshelf import pipeline
 from reshelf.store.sidecar import SidecarStore
 
@@ -105,118 +86,6 @@ def extract(
     typer.echo(f"extracted={r['extracted']} errors={r['errors']}")
 
 
-_BAND_TO_STATUS = {
-    "AUTO_ACCEPT": "MATCHED",
-    "HIGH_CONFIDENCE": "MATCHED",
-    "REVIEW_RECOMMENDED": "REVIEW",
-    "AI_RESOLUTION": "REVIEW",
-    "UNRESOLVED": "UNRESOLVED",
-}
-
-
-_HAS_CJK = re.compile(r"[一-鿿]")
-
-
-def _order_providers(providers: list, local: LocalBook) -> list:
-    """Chinese-looking books query Douban first; everything else Open Library."""
-    text = (local.title or "") + " ".join(local.authors)
-    if local.language == "zh" or _HAS_CJK.search(text):
-        return sorted(providers, key=lambda p: p.name != "douban")
-    return providers
-
-
-def _gather_candidates(providers: list, local: LocalBook) -> list:
-    for provider in providers:
-        found = []
-        for isbn in local.isbn13s:
-            found += provider.lookup_isbn(isbn)
-        if found:
-            return found
-    for provider in providers:
-        if not local.title:
-            break
-        title_q = short_title(local.title)
-        author_q = search_author(local.authors[0]) if local.authors else None
-        found = provider.search(title_q, author_q)
-        if not found and author_q:
-            found = provider.search(title_q)
-        if found:
-            return found
-    return []
-
-
-def _local_book(row) -> LocalBook:
-    return LocalBook(
-        title=row["title_raw"] or title_from_filename(Path(row["path"]).stem),
-        authors=[a.strip() for a in (row["author_raw"] or "").split(";") if a.strip()],
-        isbn13s=[row["isbn_raw"]] if row["isbn_raw"] else [],
-        language=row["language_raw"],
-    )
-
-
-def _build_providers(cfg, client) -> list:
-    providers = []
-    if cfg.providers.openlibrary.enabled:
-        providers.append(
-            OpenLibraryProvider(
-                client=client,
-                cache=FileCache(
-                    cfg.library.root / "cache" / "openlibrary", cfg.cache.ttl_days
-                ),
-            )
-        )
-    if cfg.providers.douban.enabled:
-        providers.append(
-            DoubanProvider(
-                client=client,
-                cache=FileCache(
-                    cfg.library.root / "cache" / "douban", cfg.cache.ttl_days
-                ),
-                apikey=cfg.providers.douban.apikey,
-            )
-        )
-    return providers
-
-
-def _match_file(db, providers, mcfg, row) -> str:
-    local = _local_book(row)
-    candidates = _gather_candidates(_order_providers(providers, local), local)
-    for cand in candidates:
-        cand.score, cand.evidence = score_candidate(local, cand)
-        cand.confidence = confidence_from_score(cand.score, cand.evidence)
-    candidates.sort(key=lambda c: c.score, reverse=True)
-    if not candidates:
-        db.set_status(row["id"], "UNRESOLVED")
-        return "UNRESOLVED"
-    best = candidates[0]
-    b = band(best.confidence, mcfg)
-    if (
-        len(candidates) > 1
-        and best.score - candidates[1].score < 10
-        and b in ("AUTO_ACCEPT", "HIGH_CONFIDENCE")
-        and not same_work(best, candidates[1])
-    ):
-        b = "REVIEW_RECOMMENDED"
-        best.evidence.append("ambiguous:tie")
-    for provider in providers:
-        if provider.name == best.provider:
-            best = provider.enrich(best)
-            break
-    edition_id = db.save_candidate(best)
-    db.record_match(
-        row["id"], edition_id, best.score, best.confidence,
-        "deterministic", best.evidence, b,
-    )
-    status = _BAND_TO_STATUS[b]
-    db.set_file_match(
-        row["id"],
-        edition_id if status == "MATCHED" else None,
-        best.confidence,
-        status,
-    )
-    return status
-
-
 @app.command()
 def match(
     root: Path = ROOT_OPTION,
@@ -224,35 +93,14 @@ def match(
 ) -> None:
     """Match identified files against Open Library."""
     cfg = load_config(root)
-    client = None if offline else httpx.Client(
-        headers={"User-Agent": f"reshelf/{__version__}"}
-    )
-    providers = _build_providers(cfg, client)
-    if not providers:
-        typer.echo("all providers disabled in config", err=True)
-        raise typer.Exit(1)
-    counts: dict[str, int] = {}
-    try:
-        with Database(cfg.database.path) as db:
-            rows = db.files_with_status("IDENTIFIED")
-            total = len(rows)
-            for i, row in enumerate(rows, 1):
-                try:
-                    status = _match_file(db, providers, cfg.matching, row)
-                except httpx.HTTPError as e:
-                    # leave the file IDENTIFIED so a later run retries it
-                    status = "NETWORK_ERROR"
-                    typer.echo(f"network error on {row['path']}: {e}", err=True)
-                counts[status] = counts.get(status, 0) + 1
-                db.conn.commit()
-                if i % 25 == 0 or i == total:
-                    typer.echo(
-                        f"[{i}/{total}] "
-                        + " ".join(f"{k}={v}" for k, v in sorted(counts.items()))
-                    )
-    finally:
-        if client is not None:
-            client.close()
+    with Database(cfg.database.path) as db:
+        try:
+            counts = pipeline.match(
+                cfg, db, SidecarStore(cfg), offline, _bar("Matching")
+            )
+        except RuntimeError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(1)
     typer.echo(" ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "nothing to match")
 
 
@@ -266,82 +114,17 @@ def resolve(
 ) -> None:
     """Ask Claude to judge ambiguous matches (review queue) using cached candidates."""
     cfg = load_config(root)
-    if not cfg.ai.enabled:
-        typer.echo("ai disabled in config", err=True)
-        raise typer.Exit(1)
-    resolver = ClaudeCLIResolver(model=cfg.ai.model, timeout=cfg.ai.timeout_seconds)
-    providers = _build_providers(cfg, client=None)  # cache-only candidate regathering
-    statuses = ["REVIEW"] + (["UNRESOLVED"] if include_unresolved else [])
-    counts: dict[str, int] = {}
-
-    def bump(key: str) -> None:
-        counts[key] = counts.get(key, 0) + 1
-
     with Database(cfg.database.path) as db:
-        rows = [r for s in statuses for r in db.files_with_status(s)]
-        if limit:
-            rows = rows[:limit]
-        total = len(rows)
-        for i, row in enumerate(rows, 1):
-            local = _local_book(row)
-            candidates = _gather_candidates(_order_providers(providers, local), local)
-            if not candidates:
-                bump("NO_CANDIDATES")
-                continue
-            for cand in candidates:
-                cand.score, cand.evidence = score_candidate(local, cand)
-            try:
-                decision = resolver.resolve(
-                    {
-                        "filename": Path(row["path"]).name,
-                        "title": local.title,
-                        "authors": local.authors,
-                        "isbn13": local.isbn13s[0] if local.isbn13s else None,
-                        "language": local.language,
-                    },
-                    candidates,
-                )
-            except AIError as e:
-                bump("AI_ERROR")
-                typer.echo(f"AI error on {row['path']}: {e}", err=True)
-                continue
-            if decision.decision is None:
-                db.set_status(row["id"], "UNRESOLVED")
-                bump("UNRESOLVED")
-            else:
-                best = candidates[decision.decision]
-                conf = min(max(decision.confidence, 0.0), 0.97)  # never AUTO_ACCEPT
-                b = band(conf, cfg.matching)
-                if b == "AUTO_ACCEPT":
-                    b = "HIGH_CONFIDENCE"
-                evidence = (
-                    best.evidence
-                    + [f"ai:{r}" for r in decision.reasons]
-                    + [f"ai_uncertain:{u}" for u in decision.uncertainties]
-                )
-                for provider in providers:
-                    if provider.name == best.provider:
-                        best = provider.enrich(best)
-                        break
-                edition_id = db.save_candidate(best)
-                db.record_match(
-                    row["id"], edition_id, best.score, conf, "ai", evidence, b
-                )
-                status = _BAND_TO_STATUS[b]
-                db.set_file_match(
-                    row["id"],
-                    edition_id if status == "MATCHED" else None,
-                    conf,
-                    status,
-                )
-                bump(status)
-            db.conn.commit()
-            if i % 10 == 0 or i == total:
-                typer.echo(
-                    f"[{i}/{total}] "
-                    + " ".join(f"{k}={v}" for k, v in sorted(counts.items()))
-                )
-    typer.echo(" ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "nothing to resolve")
+        try:
+            result = pipeline.resolve(
+                cfg, db, SidecarStore(cfg), limit, include_unresolved, _bar("Resolving")
+            )
+        except pipeline.AIDisabledError:
+            typer.echo("ai.provider is not set in config.yaml", err=True)
+            raise typer.Exit(1)
+    typer.echo(
+        " ".join(f"{k}={v}" for k, v in sorted(result.items())) or "nothing to resolve"
+    )
 
 
 @app.command()
