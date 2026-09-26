@@ -122,7 +122,7 @@ An Edition represents a particular publication.
 
 ---
 
-### 3.3 Originals must be preserved
+### 3.3 Originals are preserved by default
 
 Default behavior:
 
@@ -137,7 +137,12 @@ quarantine/
     unresolved files
 ```
 
-The Skill MUST NOT modify files under `incoming/` during scan or match operations.
+`library.commit_mode` selects what a commit does with the original:
+
+* `copy` (default) - the original stays in `incoming/`, a copy lands in `library/`.
+* `move` - the original is moved into `library/`. This is an explicit opt-in, and the commit journal records it so `rollback` restores the original to its former path.
+
+Scan, extract and match MUST NOT modify anything under `incoming/` in either mode. Writing metadata into a file (write-back tier 3) targets the copy under `library/` or a derived file under `derived/`, never an original.
 
 Files enter `quarantine/` only via a committed plan action, never automatically. A file becomes eligible for a quarantine action when its status is UNRESOLVED after matching (and AI resolution, if enabled) has run.
 
@@ -850,6 +855,10 @@ The database assumes a SINGLE process at a time:
 * the CLI takes an exclusive lock file (e.g. `db/.lock`) at startup and refuses to run if another instance holds it
 * SQLite is opened in WAL mode with a busy timeout, so internal worker threads (hashing, provider fetches) may share the connection pool safely
 * multi-process or networked access is explicitly out of scope for v1
+
+### The database is derived
+
+As of the web app, SQLite is **not** the system of record. A per-book JSON sidecar (default `metadata/<sha256>.json`) holds the metadata, provenance, reading position and annotations; see the sub-project A spec for its schema. The tables below are a cache of scan results and provider candidates, plus the FTS5 search index and the job queue. The database can be deleted at any time and rebuilt with `reshelf reindex`.
 
 ### Suggested schema
 
