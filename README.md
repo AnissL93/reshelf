@@ -226,7 +226,7 @@ matching:            # confidence bands, see spec §15
   ai_resolve_below: 0.75
   unresolved_below: 0.5
 scan:
-  formats: [epub, pdf]
+  formats: [epub, pdf, mobi, azw, azw3, txt, djvu]
   recursive: true
 cache:
   ttl_days: 30

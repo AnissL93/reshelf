@@ -11,9 +11,16 @@ from reshelf.writeback import EMBEDDABLE
 router = APIRouter(tags=["meta"])
 
 # Only these may be changed from the UI. Everything else needs config.yaml.
+#
+# metadata.layout is deliberately NOT here. Flipping it on a populated
+# library makes every store.load(sha, path) miss: the grid keeps listing
+# all of the books (book_index is layout-independent) while every detail
+# view and PATCH 404s. Nothing migrates the existing metadata/*.json, and
+# a later reindex would mix stale and fresh sidecars, because iter_all's
+# rglob picks up both. It is a config.yaml decision, made once, before
+# anything is scanned.
 SETTABLE = (
     "library.commit_mode",
-    "metadata.layout",
     "web.host",
     "web.port",
     "write_back.library_file",
@@ -59,11 +66,22 @@ def _get(obj: Any, dotted: str) -> Any:
     return obj
 
 
+# What GET /settings returns in place of a stored ai.api_key, and what PUT
+# treats as "leave it as it is". There is no auth on this app, so the key
+# must not come back in plaintext just so a password field can be
+# pre-filled - the UI only ever needs to know whether one is set.
+SECRET_KEYS = ("ai.api_key",)
+MASK = "********"
+
+
 @router.get("/settings")
 def get_settings(state: AppState = Depends(get_state)) -> dict:
     out = {}
     for key in SETTABLE:
         value = _get(state.cfg, key)
+        if key in SECRET_KEYS:
+            out[key] = MASK if value else None
+            continue
         out[key] = str(value) if hasattr(value, "__fspath__") else value
     return out
 
@@ -76,6 +94,11 @@ def put_settings(
     if unknown:
         raise HTTPException(422, f"not settable: {sorted(unknown)}")
     data = state.cfg.model_dump(mode="json")
+    # The UI PUTs back everything GET handed it, mask included. Echoing
+    # the mask means "unchanged", not "set my key to eight asterisks".
+    payload = {
+        k: v for k, v in payload.items() if not (k in SECRET_KEYS and v == MASK)
+    }
     for key, value in payload.items():
         section, field = key.split(".", 1)
         data[section][field] = value

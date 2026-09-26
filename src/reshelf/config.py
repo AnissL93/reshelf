@@ -42,7 +42,11 @@ class WriteBackConfig(BaseModel):
 
 class ScanConfig(BaseModel):
     recursive: bool = True
-    formats: list[str] = ["epub", "pdf", "mobi", "azw", "azw3"]
+    # txt and djvu are here because Phase 1 gave them converters
+    # (TXT->EPUB, DjVu->PDF), /capabilities advertises both and the UI
+    # offers both as filters. Leaving them out of the default meant those
+    # files could never enter the library in the first place.
+    formats: list[str] = ["epub", "pdf", "mobi", "azw", "azw3", "txt", "djvu"]
 
 
 class MatchingConfig(BaseModel):

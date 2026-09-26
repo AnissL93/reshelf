@@ -8,7 +8,10 @@ type SettingValue = string | number | boolean | null;
 // The backend's SETTABLE tuple (meta.py) is the source of truth for which
 // keys exist; this only decides how to group and label them.
 const GROUPS: { title: string; keys: string[] }[] = [
-  { title: "Library", keys: ["library.commit_mode", "metadata.layout"] },
+  // metadata.layout is deliberately absent: it is config.yaml-only (see
+  // SETTABLE in meta.py), because changing it on a populated library
+  // leaves every existing sidecar where the new layout will not look.
+  { title: "Library", keys: ["library.commit_mode"] },
   { title: "Web", keys: ["web.host", "web.port"] },
   { title: "Write-back defaults", keys: ["write_back.library_file", "write_back.embed"] },
   { title: "AI", keys: ["ai.provider", "ai.model", "ai.api_key", "ai.base_url"] },
@@ -17,7 +20,6 @@ const GROUPS: { title: string; keys: string[] }[] = [
 
 const LABELS: Record<string, string> = {
   "library.commit_mode": "Commit mode",
-  "metadata.layout": "Sidecar layout",
   "web.host": "Host",
   "web.port": "Port",
   "write_back.library_file": "Write a library-file sidecar by default",
@@ -58,14 +60,6 @@ function renderInput(
         <select value={String(value ?? "copy")} onChange={(e) => onChange(e.target.value)}>
           <option value="copy">copy</option>
           <option value="move">move</option>
-        </select>
-      );
-    case "metadata.layout":
-      return (
-        <select value={String(value ?? "hash")} onChange={(e) => onChange(e.target.value)}>
-          <option value="hash">hash</option>
-          <option value="sidecar">sidecar</option>
-          <option value="library">library</option>
         </select>
       );
     case "ai.provider":
@@ -149,8 +143,9 @@ function Field({
       </label>
       {settingKey === "ai.api_key" && (
         <p className="hint">
-          Can be supplied via the RESHELF_AI_API_KEY environment variable instead of being
-          stored here in config.yaml.
+          A stored key is never sent back here - the dots mean one is set. Leave the field
+          untouched to keep it. Can be supplied via the RESHELF_AI_API_KEY environment
+          variable instead of being stored in config.yaml at all.
         </p>
       )}
       {settingKey === "ai.provider" && (
