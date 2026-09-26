@@ -38,7 +38,7 @@ def _fts_query(q: str) -> str | None:
     return " ".join(f'"{t}"' for t in terms)
 
 
-def sync(conn: sqlite3.Connection, book: Book) -> None:
+def sync(conn: sqlite3.Connection, book: Book, commit: bool = True) -> None:
     m = book.metadata
     primary = book.primary_file()
     conn.execute(
@@ -74,7 +74,8 @@ def sync(conn: sqlite3.Connection, book: Book) -> None:
             m.publisher or "", "; ".join(m.tags), m.description or "",
         ),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def remove(conn: sqlite3.Connection, sha256: str) -> None:
@@ -88,7 +89,7 @@ def rebuild(conn: sqlite3.Connection, store: SidecarStore) -> int:
     conn.execute("DELETE FROM books_fts")
     count = 0
     for book in store.iter_all():
-        sync(conn, book)
+        sync(conn, book, commit=False)
         count += 1
     conn.commit()
     return count

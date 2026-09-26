@@ -45,7 +45,7 @@ ROOT_OPTION = typer.Option(Path("."), "--root", help="Library root (with config.
 
 SUBDIRS = [
     "incoming", "library", "quarantine", "duplicates", "covers",
-    "cache/openlibrary", "cache/douban", "reports", "db",
+    "cache/openlibrary", "cache/douban", "reports", "db", "metadata", "derived",
 ]
 
 
@@ -511,6 +511,32 @@ def calibre_export(
     )
     for f in result["failed"][:10]:
         typer.echo(f"  FAILED {Path(f['path']).name}: {f['error'][:120]}", err=True)
+
+
+@app.command("migrate-json")
+def migrate_json_cmd(root: Path = ROOT_OPTION) -> None:
+    """One shot: write a JSON sidecar for every hashed file in the database."""
+    from reshelf.store.bootstrap import migrate_json
+    from reshelf.store.sidecar import SidecarStore
+
+    cfg = load_config(root)
+    with Database(cfg.database.path) as db:
+        db.init_schema()
+        n = migrate_json(db, SidecarStore(cfg), lambda *a: None)
+    typer.echo(f"sidecars={n}")
+
+
+@app.command()
+def reindex(root: Path = ROOT_OPTION) -> None:
+    """Rebuild the derived search index from the sidecars."""
+    from reshelf.store.bootstrap import reindex as _reindex
+    from reshelf.store.sidecar import SidecarStore
+
+    cfg = load_config(root)
+    with Database(cfg.database.path) as db:
+        db.init_schema()
+        n = _reindex(db, SidecarStore(cfg), lambda *a: None)
+    typer.echo(f"indexed={n}")
 
 
 def main() -> None:
