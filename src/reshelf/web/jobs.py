@@ -89,6 +89,8 @@ class JobRunner:
     # -- lifecycle ---------------------------------------------------
 
     def start(self) -> None:
+        # Assumes nothing has enqueued a job between __init__ and this call -
+        # construct the runner and start() it before the app accepts requests.
         with self.db.lock:
             self.db.conn.execute(
                 "UPDATE jobs SET status='interrupted', finished_at=?"
@@ -217,38 +219,63 @@ class JobRunner:
             job_id = self._queue.get()
             if job_id == -1:
                 return
-            job = self.get(job_id)
-            if job is None or job["status"] != "queued":
-                continue
-
-            cancel = threading.Event()
-            self._cancels[job_id] = cancel
-            with self.db.lock:
-                self.db.conn.execute(
-                    "UPDATE jobs SET status='running', started_at=? WHERE id=?",
-                    (_now(), job_id),
-                )
-                self.db.conn.commit()
-            self._publish(job_id)
-
             try:
-                result = COMMANDS[job["command"]](
-                    self.cfg,
-                    self.db,
-                    self.store,
-                    json.loads(job["args_json"] or "{}"),
-                    self._progress_for(job_id, cancel),
-                )
-                self._finish(job_id, "done", json.dumps(result, default=str)[:4000])
-            except pipeline.JobCancelled:
-                self._finish(job_id, "cancelled")
+                self._run_one(job_id)
             except Exception as e:
-                # A pipeline stage can raise anything (network errors,
-                # AIDisabledError, KeyError on a bad arg, ...). None of it
-                # may kill this thread - the worker must keep serving the
-                # next job in the queue.
-                self._finish(
-                    job_id, "failed", error=f"{e}\n{traceback.format_exc()[-2000:]}"
-                )
-            finally:
+                # Reaching here means something outside the pipeline-stage
+                # call itself blew up - a bookkeeping statement (the claim
+                # UPDATE, a publish, the get() read). The worker must survive
+                # regardless of what that was. job_id is known, so best-effort
+                # mark it failed, but don't let a broken DB connection take
+                # the thread down while trying to record that.
+                try:
+                    self._finish(job_id, "failed", error=str(e))
+                except Exception:
+                    pass
                 self._cancels.pop(job_id, None)
+
+    def _run_one(self, job_id: int) -> None:
+        job = self.get(job_id)
+        if job is None or job["status"] != "queued":
+            return
+
+        # Claim the job atomically: between the get() above and here, a
+        # concurrent cancel() of a still-queued job may already have set
+        # status='cancelled'. Re-validating status in the WHERE clause (like
+        # cancel() already does) is what stops that write from being
+        # silently overwritten with 'running'.
+        with self.db.lock:
+            changed = self.db.conn.execute(
+                "UPDATE jobs SET status='running', started_at=?"
+                " WHERE id=? AND status='queued'",
+                (_now(), job_id),
+            ).rowcount
+            self.db.conn.commit()
+        if not changed:
+            return  # cancelled (or otherwise resolved) while we were picking it up
+
+        cancel = threading.Event()
+        self._cancels[job_id] = cancel
+        self._publish(job_id)
+
+        try:
+            result = COMMANDS[job["command"]](
+                self.cfg,
+                self.db,
+                self.store,
+                json.loads(job["args_json"] or "{}"),
+                self._progress_for(job_id, cancel),
+            )
+            self._finish(job_id, "done", json.dumps(result, default=str)[:4000])
+        except pipeline.JobCancelled:
+            self._finish(job_id, "cancelled")
+        except Exception as e:
+            # A pipeline stage can raise anything (network errors,
+            # AIDisabledError, KeyError on a bad arg, ...). None of it
+            # may kill this thread - the worker must keep serving the
+            # next job in the queue.
+            self._finish(
+                job_id, "failed", error=f"{e}\n{traceback.format_exc()[-2000:]}"
+            )
+        finally:
+            self._cancels.pop(job_id, None)

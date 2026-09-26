@@ -1,3 +1,4 @@
+import threading
 import time
 
 import pytest
@@ -143,6 +144,54 @@ def test_events_streams_progress_then_a_terminal_event(runner, monkeypatch):
         if event["status"] in ("done", "failed", "cancelled"):
             break
     assert seen[-1]["status"] == "done"
+
+
+def test_cancelling_a_queued_job_prevents_it_from_running(runner, monkeypatch):
+    ran = []
+    gate = threading.Event()
+
+    def slow_first(cfg, db, store, args, progress):
+        gate.wait(3)
+
+    def marks_if_run(cfg, db, store, args, progress):
+        ran.append(1)
+
+    monkeypatch.setitem(COMMANDS, "slow_first", slow_first)
+    monkeypatch.setitem(COMMANDS, "marks_if_run", marks_if_run)
+
+    first = runner.enqueue("slow_first", {})
+    deadline = time.monotonic() + 3
+    while runner.get(first)["status"] != "running" and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert runner.get(first)["status"] == "running"
+
+    second = runner.enqueue("marks_if_run", {})
+    assert runner.cancel(second) is True
+
+    gate.set()
+    wait_for(runner, first, "done")
+    wait_for(runner, second, "cancelled")
+    assert ran == []
+
+
+def test_a_bookkeeping_failure_does_not_kill_the_worker(runner, monkeypatch):
+    calls = {"n": 0}
+    original_publish = JobRunner._publish
+
+    def flaky_publish(self, job_id):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("bookkeeping boom")
+        return original_publish(self, job_id)
+
+    monkeypatch.setattr(JobRunner, "_publish", flaky_publish)
+    monkeypatch.setitem(COMMANDS, "fine", lambda *a: "ok")
+
+    first = runner.enqueue("fine", {})
+    wait_for(runner, first, "failed")
+
+    second = runner.enqueue("fine", {})
+    wait_for(runner, second, "done")
 
 
 def test_the_real_pipeline_commands_are_registered():
