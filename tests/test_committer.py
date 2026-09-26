@@ -1,8 +1,13 @@
 import hashlib
 import json
+import warnings
 from pathlib import Path
 
 from typer.testing import CliRunner
+
+with warnings.catch_warnings():  # Starlette's httpx2 nag, at import time
+    warnings.simplefilter("ignore")
+    from fastapi.testclient import TestClient
 
 from reshelf.cli import app
 from reshelf.config import default_config, load_config, save_config
@@ -10,6 +15,7 @@ from reshelf.db.database import Database
 from reshelf.planner.committer import apply_plan, dest_for
 from reshelf.store.models import Book, FileEntry
 from reshelf.store.sidecar import SidecarStore
+from reshelf.web.app import create_app
 
 runner = CliRunner()
 
@@ -39,10 +45,14 @@ def test_dest_for_sanitizes_and_handles_missing():
     assert "三体" in dest.name
 
 
-def _setup_committed_root(tmp_path, content=b"BOOKDATA", filename="tbp.epub"):
+def _setup_committed_root(tmp_path, content=b"BOOKDATA", filename="tbp.epub", layout="hash"):
     """init root, one MATCHED file with a matching sidecar, generate plan; returns (root, src)."""
     root = tmp_path
     runner.invoke(app, ["init", str(root)])
+    if layout != "hash":
+        cfg = load_config(root)
+        cfg.metadata.layout = layout
+        save_config(cfg, root)
     src = root / "incoming" / filename
     src.write_bytes(content)
     cfg = load_config(root)
@@ -215,19 +225,17 @@ def test_rollback_removes_copies(tmp_path):
         assert db.conn.execute("SELECT status FROM files").fetchone()["status"] == "MATCHED"
 
 
-def _cli_committed(tmp_path, mode):
+def _cli_committed(tmp_path, mode, layout="hash"):
     """init -> plan -> commit through the CLI, so pipeline.commit's own
     sidecar bookkeeping (_record_committed_path) runs too."""
-    root, src = _setup_committed_root(tmp_path)
+    root, src = _setup_committed_root(tmp_path, layout=layout)
     if mode == "move":
         cfg = load_config(root)
         cfg.library.commit_mode = "move"
         save_config(cfg, root)
     assert runner.invoke(app, ["commit", "--root", str(root)]).exit_code == 0
     cfg = load_config(root)
-    sha256 = json.loads(
-        next((root / "metadata").glob("*.json")).read_text()
-    )["sha256"]
+    sha256 = hashlib.sha256(b"BOOKDATA").hexdigest()
     journal = json.loads(next((root / "reports").glob("commit-*.json")).read_text())
     dest = Path(journal["actions"][0]["dest"])
     return root, cfg, src, dest, sha256, journal["commit_id"]
@@ -237,8 +245,9 @@ def test_move_mode_repoints_files_path_at_the_destination(tmp_path):
     """I5: move mode deletes the source but left files.path naming it.
 
     Harmless under metadata.layout=hash, wrong under the others (the
-    sidecar locator *is* files.path) and a permanent falsehood either way.
-    move_into, three branches over, has always done this.
+    sidecar locator *is* files.path) - so the repoint is conditional on
+    the layout; this guards the half that stayed fixed. move_into, three
+    branches over, has always done this.
     """
     root, cfg, src, dest, _sha, _cid = _cli_committed(tmp_path, "move")
     assert not src.exists()
@@ -311,3 +320,38 @@ def test_rollback_leaves_the_rest_of_the_sidecar_alone(tmp_path):
     assert book.source.resolver == "human"
     assert book.metadata.title == "Hand-corrected"
     assert [f.path for f in book.files] == [str(src)]
+
+
+def test_sidecar_layout_move_keeps_the_book_reachable(tmp_path):
+    """The other half of I5: under layout=sidecar the locator *is*
+    files.path, and the sidecar JSON stays in incoming/ when the bytes
+    move. Repointing files.path at the library destination severs the
+    link, and every committed book 404s while the grid still lists it."""
+    root, cfg, src, dest, sha256, _cid = _cli_committed(
+        tmp_path, "move", layout="sidecar"
+    )
+    assert not src.exists() and dest.exists()
+    with TestClient(create_app(root)) as c:
+        assert c.get(f"/api/books/{sha256}").status_code == 200
+
+    with Database(cfg.database.path) as db:
+        row = db.conn.execute("SELECT path FROM files").fetchone()
+        assert row["path"] == str(src)  # not repointed under this layout
+    assert SidecarStore(cfg).load(sha256, row["path"]) is not None
+
+
+def test_sidecar_layout_rollback_of_a_moved_import(tmp_path):
+    """The fourth quadrant: sidecar x move. files.path was never repointed,
+    so rollback's put-it-back UPDATE must be a no-op, and the sidecar
+    (still in incoming/) must come back naming src."""
+    root, cfg, src, dest, sha256, commit_id = _cli_committed(
+        tmp_path, "move", layout="sidecar"
+    )
+    assert runner.invoke(app, ["rollback", commit_id, "--root", str(root)]).exit_code == 0
+
+    assert src.exists() and not dest.exists()
+    with Database(cfg.database.path) as db:
+        row = db.conn.execute("SELECT path, status FROM files").fetchone()
+        assert row["path"] == str(src)
+        assert row["status"] == "MATCHED"
+    assert [f.path for f in SidecarStore(cfg).load(sha256, str(src)).files] == [str(src)]

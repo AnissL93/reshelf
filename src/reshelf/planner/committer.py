@@ -62,6 +62,7 @@ def apply_plan(
     do_quarantine: bool = False,
     do_duplicates: bool = False,
     mode: str = "copy",
+    layout: str = "hash",
 ) -> dict:
     now = datetime.now(timezone.utc)
     commit_id = now.strftime("%Y%m%d-%H%M%S") + "-" + uuid4().hex[:8]
@@ -116,12 +117,15 @@ def apply_plan(
                             shutil.move(action["file"], dest)
                         else:
                             shutil.copy2(action["file"], dest)
-                    if mode == "move":
-                        # Same bookkeeping move_into does. In copy mode the
+                    if mode == "move" and layout == "hash":
+                        # Same bookkeeping move_into does: in copy mode the
                         # source is still there and files.path stays right;
-                        # in move mode it is gone, and a row still naming it
-                        # is simply false - and makes the sidecar locator
-                        # (which is files.path) point at nothing.
+                        # in move mode it is gone and a row naming it is
+                        # false. Only under layout=hash, though - under
+                        # sidecar/library files.path *is* the sidecar
+                        # locator, and the sidecar deliberately does not
+                        # follow the bytes, so repointing it severs the
+                        # link and 404s the book.
                         db.conn.execute(
                             "UPDATE files SET path=? WHERE path=?",
                             (str(dest), action["file"]),
@@ -240,12 +244,19 @@ def rollback_journal(
                 src.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(dest), src)
                 _prune_empty(dest.parent, library_dir)
-                # apply_plan repointed files.path at dest when it moved the
-                # file; put it back before the status update below looks
-                # the row up by src.
-                db.conn.execute(
-                    "UPDATE files SET path=? WHERE path=?", (str(src), str(dest))
-                )
+                # apply_plan repointed files.path at dest when it moved
+                # the file under layout=hash; put it back before the status
+                # update below looks the row up by src. Under the other
+                # layouts the row still names src and there is nothing to
+                # put back - and a row at dest is then somebody else's
+                # (a scan of library/), which must not be renamed onto an
+                # existing src: path is UNIQUE.
+                if not db.conn.execute(
+                    "SELECT 1 FROM files WHERE path=?", (str(src),)
+                ).fetchone():
+                    db.conn.execute(
+                        "UPDATE files SET path=? WHERE path=?", (str(src), str(dest))
+                    )
             elif dest.exists():
                 dest.unlink()
                 _prune_empty(dest.parent, library_dir)

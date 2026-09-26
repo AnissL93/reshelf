@@ -649,6 +649,7 @@ def commit(
         do_quarantine=do_quarantine,
         do_duplicates=do_duplicates,
         mode=cfg.library.commit_mode,
+        layout=cfg.metadata.layout,
     )
     if not dry_run:
         for entry in result["actions"]:
@@ -661,9 +662,10 @@ def _record_committed_path(db: Database, store: SidecarStore, entry: dict) -> No
     """Keep the sidecar's files[] honest after a copy or move."""
     if entry.get("action") != "import":
         return
-    # In move mode apply_plan has already repointed files.path at dest, so
-    # src alone no longer finds the row. The *locator* below stays src
-    # regardless: it names the document, not where the bytes ended up.
+    # Under layout=hash in move mode apply_plan has already repointed
+    # files.path at dest, so src alone no longer finds the row; under the
+    # other layouts it still names src. The *locator* below stays src
+    # either way: it names the document, not where the bytes ended up.
     row = db.conn.execute(
         "SELECT sha256, format FROM files WHERE path IN (?,?)",
         (entry["src"], entry["dest"]),
