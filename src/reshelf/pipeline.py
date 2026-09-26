@@ -74,7 +74,15 @@ def _carry_sidecar(db, store, old_sha: str, new_sha: str, fi) -> None:
     # only if re-downloads with renames turn out to be common.
     """
     old = store.load(old_sha, fi.path)
-    if old is None or store.load(new_sha, fi.path) is not None:
+    if old is None:
+        return
+    # Under "hash" layout, load(new_sha, ...) genuinely looks up the new
+    # hash's own file, so a hit here means one already exists - don't
+    # clobber it. Under "sidecar"/"library" layout, path_for ignores the
+    # sha argument entirely, so this load returns the same not-yet-rewritten
+    # sidecar as `old` above; checking its own .sha256 tells them apart.
+    existing = store.load(new_sha, fi.path)
+    if existing is not None and existing.sha256 == new_sha:
         return
     carried = old.model_copy(deep=True)
     carried.sha256 = new_sha
@@ -82,9 +90,24 @@ def _carry_sidecar(db, store, old_sha: str, new_sha: str, fi) -> None:
         if entry.path == fi.path:
             entry.size, entry.mtime = fi.size, fi.mtime
     carried.files = [f for f in carried.files if f.role != "converted"]
+
+    old_path = store.path_for(old_sha, fi.path)
+    new_path = store.path_for(new_sha, fi.path)
     store.save(carried, fi.path)
-    store.delete(old_sha, fi.path)
-    index.remove(db.conn, old_sha)
+
+    # Duplicates share a hash. If another path still carries old_sha (set_hash
+    # has already recorded new_sha for this path, so this only matches other
+    # files), its sidecar and index row are still legitimately in use.
+    still_used = db.conn.execute(
+        "SELECT 1 FROM files WHERE sha256 = ? AND path != ? LIMIT 1",
+        (old_sha, fi.path),
+    ).fetchone()
+    # Under "sidecar"/"library" layout old_path == new_path: deleting after
+    # save would destroy the file we just wrote.
+    if not still_used and old_path != new_path:
+        store.delete(old_sha, fi.path)
+    if not still_used:
+        index.remove(db.conn, old_sha)
     index.sync(db.conn, carried)
 
 

@@ -120,3 +120,119 @@ def test_a_changed_file_carries_its_sidecar_to_the_new_hash(env):
     assert new_sha != old_sha
     assert books[new_sha].metadata.title == "My Corrected Title"
     assert books[new_sha].is_human
+
+
+def _bump_bytes(path):
+    import os
+
+    with open(path, "ab") as fh:
+        fh.write(b"\x00" * 64)
+    os.utime(path, (0, 0))
+
+
+def test_carry_sidecar_works_under_sidecar_layout(env):
+    """path_for ignores the sha under 'sidecar' layout - the existence guard
+    must not mistake the not-yet-rewritten old sidecar for an existing new
+    one and no-op the whole carry."""
+    cfg, db, _default_store = env
+    cfg.metadata.layout = "sidecar"
+    store = SidecarStore(cfg)
+    path = cfg.library.incoming / "dune.epub"
+    make_epub(path, "Dune", "Frank Herbert")
+    scan(cfg, db, store, cfg.library.incoming, NOOP)
+    extract(cfg, db, store, force=False, progress=NOOP)
+
+    old_sha = db.conn.execute(
+        "SELECT sha256 FROM files WHERE path = ?", (str(path),)
+    ).fetchone()[0]
+    store.update(
+        old_sha,
+        lambda b: (
+            setattr(b.metadata, "title", "My Corrected Title"),
+            setattr(b.source, "resolver", "human"),
+        ),
+        str(path),
+    )
+
+    make_epub(path, "Dune", "Frank Herbert")
+    _bump_bytes(path)
+
+    scan(cfg, db, store, cfg.library.incoming, NOOP)
+
+    new_sha = db.conn.execute(
+        "SELECT sha256 FROM files WHERE path = ?", (str(path),)
+    ).fetchone()[0]
+    assert new_sha != old_sha
+    book = store.load(new_sha, str(path))
+    assert book is not None
+    assert book.sha256 == new_sha
+    assert book.metadata.title == "My Corrected Title"
+    assert book.is_human
+
+
+def test_carry_sidecar_leaves_the_file_readable_under_sidecar_layout(env):
+    """Under 'sidecar'/'library' layout the old and new paths are identical,
+    so save-then-delete must not destroy the sidecar it just wrote."""
+    cfg, db, _default_store = env
+    cfg.metadata.layout = "sidecar"
+    store = SidecarStore(cfg)
+    path = cfg.library.incoming / "dune.epub"
+    make_epub(path, "Dune", "Frank Herbert")
+    scan(cfg, db, store, cfg.library.incoming, NOOP)
+    extract(cfg, db, store, force=False, progress=NOOP)
+    old_sha = db.conn.execute(
+        "SELECT sha256 FROM files WHERE path = ?", (str(path),)
+    ).fetchone()[0]
+
+    make_epub(path, "Dune", "Frank Herbert")
+    _bump_bytes(path)
+
+    scan(cfg, db, store, cfg.library.incoming, NOOP)
+
+    new_sha = db.conn.execute(
+        "SELECT sha256 FROM files WHERE path = ?", (str(path),)
+    ).fetchone()[0]
+    assert new_sha != old_sha
+    sidecar_path = path.with_name(path.name + ".json")
+    assert sidecar_path.exists()
+    book = store.load(new_sha, str(path))
+    assert book is not None
+    assert book.sha256 == new_sha
+
+
+def test_carry_preserves_a_duplicates_sidecar_and_index_row(env):
+    """Two paths sharing a hash: changing one must not delete the shared
+    sidecar or index row the other path still legitimately refers to."""
+    cfg, db, store = env
+    path_a = cfg.library.incoming / "a.epub"
+    path_b = cfg.library.incoming / "b.epub"
+    make_epub(path_a, "Dune", "Frank Herbert")
+    make_epub(path_b, "Dune", "Frank Herbert")
+    scan(cfg, db, store, cfg.library.incoming, NOOP)
+    extract(cfg, db, store, force=False, progress=NOOP)
+
+    shared_sha = db.conn.execute(
+        "SELECT sha256 FROM files WHERE path = ?", (str(path_a),)
+    ).fetchone()[0]
+    assert (
+        db.conn.execute(
+            "SELECT sha256 FROM files WHERE path = ?", (str(path_b),)
+        ).fetchone()[0]
+        == shared_sha
+    )
+
+    make_epub(path_a, "Dune", "Frank Herbert")
+    _bump_bytes(path_a)
+
+    scan(cfg, db, store, cfg.library.incoming, NOOP)
+
+    new_sha_a = db.conn.execute(
+        "SELECT sha256 FROM files WHERE path = ?", (str(path_a),)
+    ).fetchone()[0]
+    assert new_sha_a != shared_sha
+    assert store.load(shared_sha, str(path_b)) is not None
+
+    from reshelf.store import index
+
+    rows, _total = index.query(db.conn, q="Dune")
+    assert any(r["sha256"] == shared_sha for r in rows)
