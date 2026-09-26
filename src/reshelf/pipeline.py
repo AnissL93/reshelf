@@ -430,6 +430,30 @@ def match_one(
         candidates.sort(key=lambda c: c.score, reverse=True)
         for cand in candidates:
             cand.edition_id = db.save_candidate(cand)
+        # Record every ranked candidate so `/books/{sha}/candidates` - and the
+        # "Use this" picker it feeds - has something to show. `record_match`
+        # is the provenance log, not a decision: `choose` is what commits one,
+        # via `set_file_match`, which this function deliberately never calls
+        # (the docstring's "never writes a decision" holds). A distinct
+        # resolver label ("rematch") keeps these apart from the batch
+        # matcher's "deterministic"/"ai" rows and from a human's prior pick.
+        # A repeat search on the same book replaces its own prior rows rather
+        # than accumulating duplicates of the same candidates on every click;
+        # rows from another resolver are left untouched.
+        db.conn.execute(
+            "DELETE FROM matches WHERE file_id = ? AND resolver = 'rematch'",
+            (row["id"],),
+        )
+        for cand in candidates:
+            db.record_match(
+                row["id"],
+                cand.edition_id,
+                cand.score,
+                cand.confidence,
+                "rematch",
+                cand.evidence,
+                band(cand.confidence, cfg.matching),
+            )
         db.conn.commit()
     finally:
         client.close()

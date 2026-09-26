@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from reshelf import pipeline
+from reshelf.metadata.models import Author, Candidate, Edition, Work
 from reshelf.web.app import create_app
 from tests.test_api_metadata import SHA, build
 
@@ -18,6 +19,38 @@ class FakeProvider:
 
     def search(self, title, author=None, language=None):
         return []
+
+    def enrich(self, cand):
+        return cand
+
+
+class TwoCandidateProvider:
+    """A provider whose `search` returns two distinct, scorable candidates -
+    used to prove the rematch -> candidates -> choose round trip end to end.
+    """
+
+    name = "fake"
+
+    def lookup_isbn(self, isbn):
+        return []
+
+    def search(self, title, author=None, language=None):
+        return [
+            Candidate(
+                provider="fake",
+                provider_id="fake-1",
+                edition=Edition(
+                    work=Work(title="Old Title", authors=[Author(name="Old Author")]),
+                ),
+            ),
+            Candidate(
+                provider="fake",
+                provider_id="fake-2",
+                edition=Edition(
+                    work=Work(title="Unrelated Book", authors=[Author(name="Someone Else")]),
+                ),
+            ),
+        ]
 
     def enrich(self, cand):
         return cand
@@ -100,6 +133,48 @@ def test_rematch_without_ai_enqueues_a_job(tmp_path, monkeypatch):
         assert "job_id" in r.json()
         job = wait(c, r.json()["job_id"])
         assert job["status"] == "done"
+
+
+def test_rematch_populates_candidates_that_choose_can_then_pick(tmp_path, monkeypatch):
+    """The regression guard for the whole Fix-metadata flow: `match_one`
+    (run by the web "rematch" action) must leave something in `matches` for
+    `/candidates` to return, or "Search providers" finds results the user
+    has no way to click. See pipeline.match_one's `record_match` loop.
+    """
+    build(tmp_path)
+    monkeypatch.setattr(pipeline, "build_providers", lambda cfg, client: [TwoCandidateProvider()])
+    with TestClient(create_app(tmp_path)) as c:
+        job = wait(c, c.post(f"/api/books/{SHA}/rematch", json={}).json()["job_id"])
+        assert job["status"] == "done"
+
+        candidates = c.get(f"/api/books/{SHA}/candidates").json()
+        assert len(candidates) == 2
+        by_title = {cand["title"]: cand for cand in candidates}
+        assert set(by_title) == {"Old Title", "Unrelated Book"}
+        # Exact title+author match must outscore the unrelated one - proves
+        # the real score/confidence computed in match_one made it through to
+        # the recorded row, not a placeholder.
+        assert by_title["Old Title"]["score"] > by_title["Unrelated Book"]["score"]
+        assert all(cand["resolver"] == "rematch" for cand in candidates)
+
+        chosen = by_title["Old Title"]
+        body = c.post(
+            f"/api/books/{SHA}/choose", json={"candidate_id": chosen["edition_id"]}
+        ).json()
+        assert body["sidecar"]["metadata"]["title"] == "Old Title"
+        assert body["sidecar"]["metadata"]["authors"] == ["Old Author"]
+        assert body["sidecar"]["source"]["resolver"] == "human"
+
+
+def test_rematch_replaces_its_own_prior_candidates_rather_than_piling_up(tmp_path, monkeypatch):
+    """Clicking "Search providers" twice must not double the picker's rows -
+    only this book's own earlier `resolver="rematch"` rows are cleared."""
+    build(tmp_path)
+    monkeypatch.setattr(pipeline, "build_providers", lambda cfg, client: [TwoCandidateProvider()])
+    with TestClient(create_app(tmp_path)) as c:
+        wait(c, c.post(f"/api/books/{SHA}/rematch", json={}).json()["job_id"])
+        wait(c, c.post(f"/api/books/{SHA}/rematch", json={}).json()["job_id"])
+        assert len(c.get(f"/api/books/{SHA}/candidates").json()) == 2
 
 
 def test_choose_makes_the_decision_human_and_sticky(tmp_path):
