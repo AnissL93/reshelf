@@ -6,6 +6,7 @@
 """
 
 import json
+import logging
 import queue
 import threading
 import traceback
@@ -15,6 +16,8 @@ from pathlib import Path
 
 from reshelf import pipeline
 from reshelf.store.bootstrap import reindex as _reindex
+
+logger = logging.getLogger(__name__)
 
 TERMINAL = ("done", "failed", "cancelled", "interrupted")
 
@@ -220,7 +223,11 @@ class JobRunner:
         try:
             self._publish(job_id)
         except Exception:
-            pass
+            logger.exception(
+                "publish of terminal status %r for job %s failed;"
+                " an /events subscriber will only notice via its poll timeout",
+                status, job_id,
+            )
 
     def _work(self) -> None:
         while not self._stopping.is_set():
