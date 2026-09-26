@@ -11,7 +11,6 @@ import {
   patchMetadata,
   rematchBook,
 } from "../api";
-import type { MetadataErrorDetail } from "../api";
 import CandidateList from "../components/CandidateList";
 import MetadataForm from "../components/MetadataForm";
 import type { SaveOutcome } from "../components/MetadataForm";
@@ -42,14 +41,17 @@ function primaryFormat(files: FileEntry[]): string | null {
   return [...files].sort((a, b) => rank(a) - rank(b))[0].format;
 }
 
-function isMetadataError(detail: unknown): detail is MetadataErrorDetail {
-  if (typeof detail !== "object" || detail === null) return false;
+// The metadata PATCH's only 422s all live inside the write-back "embed"
+// branch (see patch_metadata in books.py), which runs after the sidecar
+// mutate+sync - so any 422 shaped like this means tier 1 already saved.
+// Deliberately not restricted to the three reasons this UI has a specific
+// remedy for: a reason the backend adds later should still show its
+// `message` via the generic branch in MetadataForm, not vanish.
+function isSidecarSavedError(detail: unknown): detail is { reason: string; message: string } {
+  if (typeof detail !== "object" || detail === null || Array.isArray(detail)) return false;
   const reason = (detail as Record<string, unknown>).reason;
   const message = (detail as Record<string, unknown>).message;
-  return (
-    (reason === "convert_first" || reason === "not_in_library" || reason === "unwritable") &&
-    typeof message === "string"
-  );
+  return typeof reason === "string" && typeof message === "string";
 }
 
 type RematchQuery = { title: string; author: string; isbn: string };
@@ -114,13 +116,27 @@ export default function BookDetail() {
         setBook((b) => (b ? { ...b, sidecar: result.sidecar } : b));
         return { ok: true, warnings: result.warnings };
       } catch (e) {
-        if (e instanceof ApiError && e.status === 422 && isMetadataError(e.detail)) {
+        if (e instanceof ApiError && e.status === 422 && isSidecarSavedError(e.detail)) {
           // Tier 1 (the sidecar) already saved server-side before this tier
           // was attempted - refetch so the header/candidates reflect it.
           load();
-          return { ok: false, reason: e.detail.reason, message: e.detail.message };
+          return {
+            ok: false,
+            sidecarSaved: true,
+            reason: e.detail.reason,
+            message: e.detail.message,
+          };
         }
-        throw e;
+        // A network failure, a 404/500, or any other shape - nothing is
+        // known to have persisted. Never rethrow: MetadataForm already
+        // cleared its previous error state before calling this, so an
+        // unhandled rejection here would leave the form looking exactly
+        // like a successful save.
+        return {
+          ok: false,
+          sidecarSaved: false,
+          message: e instanceof Error ? e.message : "failed to save",
+        };
       }
     },
     [sha, load],

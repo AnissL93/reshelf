@@ -177,6 +177,49 @@ def test_rematch_replaces_its_own_prior_candidates_rather_than_piling_up(tmp_pat
         assert len(c.get(f"/api/books/{SHA}/candidates").json()) == 2
 
 
+def test_rematch_does_not_delete_another_resolvers_matches(tmp_path, monkeypatch):
+    """match_one's cleanup DELETE is scoped to `file_id AND resolver =
+    'rematch'` - it must never touch a row the batch matcher (or a human's
+    prior choice) already recorded for the same file. This is the
+    provenance the library's 582 already-committed/matched books rely on;
+    a "Search providers" click on one of them must not erase how it got
+    there.
+    """
+    build(tmp_path)
+    from reshelf.config import load_config
+    from reshelf.db.database import Database
+
+    cfg = load_config(tmp_path)
+    db = Database(cfg.database.path)
+    file_id = db.conn.execute("SELECT id FROM files WHERE sha256 = ?", (SHA,)).fetchone()["id"]
+    batch_edition_id = db.save_candidate(
+        Candidate(
+            provider="openlibrary",
+            provider_id="OL-batch",
+            edition=Edition(
+                work=Work(title="Batch Matched Title", authors=[Author(name="Batch Author")]),
+            ),
+        )
+    )
+    db.record_match(
+        file_id, batch_edition_id, 95.0, 0.95, "deterministic", ["exact_isbn"], "AUTO_ACCEPT"
+    )
+    db.conn.commit()
+    db.close()
+
+    monkeypatch.setattr(pipeline, "build_providers", lambda cfg, client: [TwoCandidateProvider()])
+    with TestClient(create_app(tmp_path)) as c:
+        wait(c, c.post(f"/api/books/{SHA}/rematch", json={}).json()["job_id"])
+
+        candidates = c.get(f"/api/books/{SHA}/candidates").json()
+        # The pre-existing batch-matcher row plus the two fresh rematch rows.
+        assert len(candidates) == 3
+        assert {cand["resolver"] for cand in candidates} == {"deterministic", "rematch"}
+        batch_row = next(cand for cand in candidates if cand["resolver"] == "deterministic")
+        assert batch_row["title"] == "Batch Matched Title"
+        assert batch_row["edition_id"] == batch_edition_id
+
+
 def test_choose_makes_the_decision_human_and_sticky(tmp_path):
     from reshelf.config import load_config
     from reshelf.db.database import Database
