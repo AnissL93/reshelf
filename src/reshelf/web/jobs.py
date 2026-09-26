@@ -212,7 +212,15 @@ class JobRunner:
                 (status, message, error, _now(), job_id),
             )
             self.db.conn.commit()
-        self._publish(job_id)
+        # The status write above is already durable. A subscriber-notify
+        # failure here must never be mistaken for the job itself failing -
+        # every caller (including the "done" path) routes through this one
+        # method, so guarding it here keeps a publish blip from rewriting an
+        # already-committed terminal status anywhere it's called from.
+        try:
+            self._publish(job_id)
+        except Exception:
+            pass
 
     def _work(self) -> None:
         while not self._stopping.is_set():
@@ -229,7 +237,10 @@ class JobRunner:
                 # mark it failed, but don't let a broken DB connection take
                 # the thread down while trying to record that.
                 try:
-                    self._finish(job_id, "failed", error=str(e))
+                    self._finish(
+                        job_id, "failed",
+                        error=f"{e}\n{traceback.format_exc()[-2000:]}",
+                    )
                 except Exception:
                     pass
                 self._cancels.pop(job_id, None)

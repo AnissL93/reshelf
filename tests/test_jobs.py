@@ -147,30 +147,35 @@ def test_events_streams_progress_then_a_terminal_event(runner, monkeypatch):
 
 
 def test_cancelling_a_queued_job_prevents_it_from_running(runner, monkeypatch):
+    """A cancel landing between the worker's own status read and its own
+    claim UPDATE (for the SAME job) must not be silently overwritten back to
+    'running'. Timing alone can't force that interleaving deterministically,
+    so this drives it through a seam: the worker's own first `get()` call for
+    this job triggers a real cancel and then hands back the stale (still
+    "queued") snapshot it already read - exactly what a context switch there
+    would produce.
+    """
     ran = []
-    gate = threading.Event()
+    seen = []
+    triggered = threading.Event()
+    original_get = JobRunner.get
 
-    def slow_first(cfg, db, store, args, progress):
-        gate.wait(3)
+    def get_then_cancel(self, job_id):
+        row = original_get(self, job_id)
+        if row is not None and row["command"] == "marks_if_run" and job_id not in seen:
+            seen.append(job_id)
+            self.cancel(job_id)  # lands in the window, before the worker's own claim
+            triggered.set()
+        return row
 
-    def marks_if_run(cfg, db, store, args, progress):
-        ran.append(1)
+    monkeypatch.setattr(JobRunner, "get", get_then_cancel)
+    monkeypatch.setitem(
+        COMMANDS, "marks_if_run", lambda cfg, db, store, args, progress: ran.append(1)
+    )
 
-    monkeypatch.setitem(COMMANDS, "slow_first", slow_first)
-    monkeypatch.setitem(COMMANDS, "marks_if_run", marks_if_run)
-
-    first = runner.enqueue("slow_first", {})
-    deadline = time.monotonic() + 3
-    while runner.get(first)["status"] != "running" and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert runner.get(first)["status"] == "running"
-
-    second = runner.enqueue("marks_if_run", {})
-    assert runner.cancel(second) is True
-
-    gate.set()
-    wait_for(runner, first, "done")
-    wait_for(runner, second, "cancelled")
+    job_id = runner.enqueue("marks_if_run", {})
+    assert triggered.wait(3), "worker never read the job"
+    wait_for(runner, job_id, "cancelled")
     assert ran == []
 
 
@@ -192,6 +197,29 @@ def test_a_bookkeeping_failure_does_not_kill_the_worker(runner, monkeypatch):
 
     second = runner.enqueue("fine", {})
     wait_for(runner, second, "done")
+
+
+def test_a_publish_failure_on_a_successful_job_does_not_mark_it_failed(
+    runner, monkeypatch
+):
+    calls = {"n": 0}
+    original_publish = JobRunner._publish
+
+    def flaky_publish(self, job_id):
+        calls["n"] += 1
+        # The 2nd publish for this job is the one _finish("done", ...) makes
+        # after the "done" status is already committed - that's the one that
+        # must not be able to turn a real success into a recorded failure.
+        if calls["n"] == 2:
+            raise RuntimeError("publish boom on the terminal write")
+        return original_publish(self, job_id)
+
+    monkeypatch.setattr(JobRunner, "_publish", flaky_publish)
+    monkeypatch.setitem(COMMANDS, "fine", lambda *a: "ok")
+
+    job_id = runner.enqueue("fine", {})
+    job = wait_for(runner, job_id, "done")
+    assert job["status"] == "done"
 
 
 def test_the_real_pipeline_commands_are_registered():
