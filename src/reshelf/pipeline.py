@@ -6,6 +6,7 @@ the CLI and the web job runner share one implementation. The callback
 raises JobCancelled to stop a run cooperatively.
 """
 
+import json
 import re
 from collections.abc import Callable
 from pathlib import Path
@@ -30,6 +31,8 @@ from reshelf.matching.scorer import (
 from reshelf.metadata.isbn import find_isbns
 from reshelf.metadata.models import Candidate
 from reshelf.metadata.normalization import search_author, short_title, title_from_filename
+from reshelf.planner.committer import apply_plan, rollback_journal
+from reshelf.planner.planner import generate_plan
 from reshelf.providers.cache import FileCache
 from reshelf.providers.douban import DoubanProvider
 from reshelf.providers.openlibrary import OpenLibraryProvider
@@ -566,3 +569,67 @@ def choose(
     db.conn.commit()
     index.sync(db.conn, book)
     return book
+
+
+def plan(cfg: Config, db: Database, store: SidecarStore) -> Path:
+    return generate_plan(db, store, Path(cfg.library.root) / "reports")
+
+
+def commit(
+    cfg: Config,
+    db: Database,
+    store: SidecarStore,
+    plan_path: Path,
+    progress: Progress,
+    dry_run: bool = False,
+    do_quarantine: bool = False,
+    do_duplicates: bool = False,
+) -> dict:
+    progress(0, None, f"applying {Path(plan_path).name}")
+    root = Path(cfg.library.root)
+    result = apply_plan(
+        json.loads(Path(plan_path).read_text()),
+        db,
+        library_dir=root / "library",
+        quarantine_dir=cfg.library.quarantine,
+        duplicates_dir=root / "duplicates",
+        reports_dir=root / "reports",
+        dry_run=dry_run,
+        do_quarantine=do_quarantine,
+        do_duplicates=do_duplicates,
+        mode=cfg.library.commit_mode,
+    )
+    for entry in result["actions"]:
+        _record_committed_path(db, store, entry)
+    progress(len(result["actions"]), None, "done")
+    return result
+
+
+def _record_committed_path(db: Database, store: SidecarStore, entry: dict) -> None:
+    """Keep the sidecar's files[] honest after a copy or move."""
+    if entry.get("action") != "import":
+        return
+    row = db.conn.execute(
+        "SELECT sha256, format FROM files WHERE path = ?", (entry["src"],)
+    ).fetchone()
+    if row is None or not row["sha256"]:
+        return
+    dest = entry["dest"]
+
+    def mutate(book: Book) -> None:
+        if entry.get("moved"):
+            book.files = [f for f in book.files if f.path != entry["src"]]
+        if not any(f.path == dest for f in book.files):
+            book.files.append(FileEntry(path=dest, format=row["format"] or ""))
+
+    book = store.update(row["sha256"], mutate, entry["src"])
+    index.sync(db.conn, book)
+
+
+def rollback(cfg: Config, db: Database, commit_id: str, progress: Progress) -> dict:
+    progress(0, None, f"rolling back {commit_id}")
+    journal_path = Path(cfg.library.root) / "reports" / f"commit-{commit_id}.json"
+    if not journal_path.exists():
+        raise FileNotFoundError(f"no journal at {journal_path}")
+    journal = json.loads(journal_path.read_text())
+    return rollback_journal(journal, db, Path(cfg.library.root) / "library")

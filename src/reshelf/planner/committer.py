@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from reshelf.calibre.convert import KINDLE_FORMATS, ConversionError, convert_to_epub
 from reshelf.db.database import Database
 from reshelf.scanner.hashing import sha256_file
 
@@ -59,7 +58,7 @@ def apply_plan(
     dry_run: bool = False,
     do_quarantine: bool = False,
     do_duplicates: bool = False,
-    convert_kindle: bool = True,
+    mode: str = "copy",
 ) -> dict:
     now = datetime.now(timezone.utc)
     commit_id = now.strftime("%Y%m%d-%H%M%S") + "-" + uuid4().hex[:8]
@@ -103,28 +102,16 @@ def apply_plan(
                 if reason:
                     skip(action, reason)
                     continue
-                needs_convert = (
-                    convert_kindle
-                    and Path(action["file"]).suffix.lower() in KINDLE_FORMATS
+                dest, already = _unique_dest(
+                    dest_for(action, library_dir),
+                    action["preconditions"].get("sha256"),
                 )
-                if needs_convert:
-                    dest = dest_for(action, library_dir).with_suffix(".epub")
-                    already = dest.exists()  # content hashes can't be compared
-                else:
-                    dest, already = _unique_dest(
-                        dest_for(action, library_dir),
-                        action["preconditions"].get("sha256"),
-                    )
                 if not dry_run:
                     if not already:
-                        if needs_convert:
-                            try:
-                                convert_to_epub(Path(action["file"]), dest)
-                            except ConversionError as e:
-                                skip(action, f"conversion failed: {e}")
-                                continue
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        if mode == "move":
+                            shutil.move(action["file"], dest)
                         else:
-                            dest.parent.mkdir(parents=True, exist_ok=True)
                             shutil.copy2(action["file"], dest)
                     db.set_status(row["id"], "COMMITTED")
                     db.conn.commit()
@@ -133,7 +120,7 @@ def apply_plan(
                         "action": "import",
                         "src": action["file"],
                         "dest": str(dest),
-                        "converted": needs_convert,
+                        "moved": mode == "move",
                     }
                 )
             elif kind == "quarantine":
@@ -174,18 +161,28 @@ def apply_plan(
     return journal
 
 
+def _prune_empty(parent: Path, library_dir: Path) -> None:
+    while parent != Path(library_dir) and parent.exists() and not any(parent.iterdir()):
+        parent.rmdir()
+        parent = parent.parent
+
+
 def rollback_journal(journal: dict, db: Database, library_dir: Path) -> dict:
     reverted: list[dict] = []
     skipped: list[dict] = []
     for entry in reversed(journal.get("actions", [])):
         src, dest = Path(entry["src"]), Path(entry["dest"])
         if entry["action"] == "import":
-            if dest.exists():
+            if entry.get("moved"):
+                if not dest.exists() or src.exists():
+                    skipped.append({**entry, "reason": "cannot restore"})
+                    continue
+                src.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(dest), src)
+                _prune_empty(dest.parent, library_dir)
+            elif dest.exists():
                 dest.unlink()
-                parent = dest.parent
-                while parent != Path(library_dir) and not any(parent.iterdir()):
-                    parent.rmdir()
-                    parent = parent.parent
+                _prune_empty(dest.parent, library_dir)
             db.conn.execute(
                 "UPDATE files SET status='MATCHED' WHERE path=? AND status='COMMITTED'",
                 (str(src),),

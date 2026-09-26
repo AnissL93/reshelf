@@ -1,12 +1,15 @@
 import hashlib
 import json
+from pathlib import Path
 
 from typer.testing import CliRunner
 
 from reshelf.cli import app
 from reshelf.config import default_config, load_config, save_config
 from reshelf.db.database import Database
-from reshelf.planner.committer import dest_for
+from reshelf.planner.committer import apply_plan, dest_for
+from reshelf.store.models import Book, FileEntry
+from reshelf.store.sidecar import SidecarStore
 
 runner = CliRunner()
 
@@ -37,36 +40,59 @@ def test_dest_for_sanitizes_and_handles_missing():
 
 
 def _setup_committed_root(tmp_path, content=b"BOOKDATA", filename="tbp.epub"):
-    """init root, one MATCHED file with edition, generate plan; returns (root, src)."""
+    """init root, one MATCHED file with a matching sidecar, generate plan; returns (root, src)."""
     root = tmp_path
     runner.invoke(app, ["init", str(root)])
     src = root / "incoming" / filename
     src.write_bytes(content)
     cfg = load_config(root)
+    sha256 = hashlib.sha256(content).hexdigest()
     with Database(cfg.database.path) as db:
         st = src.stat()
         fid, _ = db.upsert_file(
             str(src), st.st_size, int(st.st_mtime), src.suffix.lstrip(".")
         )
-        db.set_hash(fid, hashlib.sha256(content).hexdigest())
-        from reshelf.metadata.models import Author, Candidate, Edition, Work
-
-        eid = db.save_candidate(
-            Candidate(
-                provider="openlibrary",
-                provider_id="/books/OL1M",
-                edition=Edition(
-                    work=Work(title="The Three-Body Problem", authors=[Author(name="Liu Cixin")]),
-                    isbn13="9780765382030",
-                    publication_date="2014",
-                ),
-            )
-        )
-        db.set_file_match(fid, eid, 0.99, "MATCHED")
+        db.set_hash(fid, sha256)
+        db.set_file_match(fid, None, 0.99, "MATCHED")
         db.conn.commit()
+
+    book = Book(sha256=sha256, files=[FileEntry(path=str(src), format=src.suffix.lstrip("."))])
+    book.metadata.title = "The Three-Body Problem"
+    book.metadata.authors = ["Liu Cixin"]
+    book.metadata.isbn13 = "9780765382030"
+    book.metadata.pubdate = "2014"
+    SidecarStore(cfg).save(book, str(src))
+
     r = runner.invoke(app, ["plan", "--root", str(root)])
     assert r.exit_code == 0, r.output
     return root, src
+
+
+def committed_env(tmp_path, mode: str = "copy", fmt: str = "epub"):
+    """Plan then commit one MATCHED book directly (not via the CLI) so `mode` can vary."""
+    content = f"{fmt.upper()}DATA".encode()
+    root, src = _setup_committed_root(tmp_path, content=content, filename=f"tbp.{fmt}")
+    cfg = load_config(root)
+    db = Database(cfg.database.path)
+    plan_path = next((root / "reports").glob("plan-*.json"))
+    journal = apply_plan(
+        json.loads(plan_path.read_text()),
+        db,
+        library_dir=root / "library",
+        quarantine_dir=cfg.library.quarantine,
+        duplicates_dir=root / "duplicates",
+        reports_dir=root / "reports",
+        mode=mode,
+    )
+    dest = Path(journal["actions"][0]["dest"])
+    return {
+        "src": src,
+        "dest": dest,
+        "db": db,
+        "journal": journal,
+        "reports": root / "reports",
+        "library_dir": root / "library",
+    }
 
 
 def test_commit_copies_and_journals(tmp_path):
@@ -119,44 +145,33 @@ def test_commit_is_idempotent(tmp_path):
     assert len(dests) == 1
 
 
-def test_commit_converts_kindle_formats(tmp_path, monkeypatch):
-    root, src = _setup_committed_root(tmp_path, content=b"MOBIDATA", filename="tbp.mobi")
-
-    def fake_convert(source, dest, timeout=600):
-        from pathlib import Path
-
-        Path(dest).parent.mkdir(parents=True, exist_ok=True)
-        Path(dest).write_bytes(b"CONVERTED-EPUB")
-
-    monkeypatch.setattr("reshelf.planner.committer.convert_to_epub", fake_convert)
-    r = runner.invoke(app, ["commit", "--root", str(root)])
-    assert r.exit_code == 0, r.output
-
-    dest = root / "library" / "Liu Cixin" / "The Three-Body Problem (2014)" / "The Three-Body Problem.epub"
-    assert dest.read_bytes() == b"CONVERTED-EPUB"
-    assert src.exists() and src.read_bytes() == b"MOBIDATA"  # original untouched
-
-    journal = json.loads(next((root / "reports").glob("commit-*.json")).read_text())
-    entry = journal["actions"][0]
-    assert entry["converted"] is True and entry["dest"] == str(dest)
+def test_copy_mode_leaves_the_original_in_place(tmp_path):
+    env = committed_env(tmp_path, mode="copy")
+    assert env["src"].exists()
+    assert env["dest"].exists()
 
 
-def test_commit_conversion_failure_skips(tmp_path, monkeypatch):
-    from reshelf.calibre.convert import ConversionError
+def test_move_mode_removes_the_original(tmp_path):
+    env = committed_env(tmp_path, mode="move")
+    assert not env["src"].exists()
+    assert env["dest"].exists()
 
-    root, src = _setup_committed_root(tmp_path, content=b"MOBIDATA", filename="tbp.mobi")
 
-    def broken_convert(source, dest, timeout=600):
-        raise ConversionError("boom")
+def test_rollback_restores_a_moved_original(tmp_path):
+    env = committed_env(tmp_path, mode="move")
+    from reshelf.planner.committer import rollback_journal
 
-    monkeypatch.setattr("reshelf.planner.committer.convert_to_epub", broken_convert)
-    r = runner.invoke(app, ["commit", "--root", str(root)])
-    assert r.exit_code == 0, r.output
-    assert "skipped=1" in r.output
-    assert not list((root / "library").rglob("*.epub"))
-    cfg = load_config(root)
-    with Database(cfg.database.path) as db:
-        assert db.conn.execute("SELECT status FROM files").fetchone()["status"] == "MATCHED"
+    result = rollback_journal(env["journal"], env["db"], env["library_dir"])
+    assert result == {"reverted": 1, "skipped": 0}
+    assert env["src"].exists()
+    assert not env["dest"].exists()
+
+
+def test_a_kindle_file_is_committed_as_is_not_converted(tmp_path):
+    """Conversion is a per-book action now; commit must not silently convert."""
+    env = committed_env(tmp_path, mode="copy", fmt="azw3")
+    assert env["dest"].suffix == ".azw3"
+    assert env["dest"].read_bytes() == b"AZW3DATA"
 
 
 def test_rollback_removes_copies(tmp_path):

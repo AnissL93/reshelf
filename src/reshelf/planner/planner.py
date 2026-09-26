@@ -4,40 +4,37 @@ from pathlib import Path
 from uuid import uuid4
 
 from reshelf.db.database import Database
+from reshelf.store.sidecar import SidecarStore
 
 
 def _preconditions(row) -> dict:
     return {"sha256": row["sha256"], "size": row["size"], "mtime": row["mtime"]}
 
 
-def generate_plan(db: Database, reports_dir: Path) -> Path:
+def generate_plan(db: Database, store: SidecarStore, reports_dir: Path) -> Path:
     now = datetime.now(timezone.utc)
     plan_id = now.strftime("%Y%m%d-%H%M%S") + "-" + uuid4().hex[:8]
     actions: list[dict] = []
 
     matched = db.conn.execute(
-        "SELECT f.*, e.isbn13, e.publisher, e.publication_date,"
-        " w.canonical_title,"
-        " (SELECT a.canonical_name FROM work_authors wa"
-        "   JOIN authors a ON a.id = wa.author_id"
-        "   WHERE wa.work_id = w.id LIMIT 1) AS author"
-        " FROM files f"
-        " JOIN editions e ON e.id = f.matched_edition_id"
-        " JOIN works w ON w.id = e.work_id"
-        " WHERE f.status = 'MATCHED' ORDER BY f.path"
+        "SELECT * FROM files WHERE status = 'MATCHED' ORDER BY path"
     ).fetchall()
     for r in matched:
+        book = store.load(r["sha256"], r["path"]) if r["sha256"] else None
+        if book is None:
+            continue  # no sidecar means no metadata to name a destination by
+        m = book.metadata
         actions.append(
             {
                 "file": r["path"],
                 "action": "import",
                 "preconditions": _preconditions(r),
                 "metadata_changes": {
-                    "title": r["canonical_title"],
-                    "author": r["author"],
-                    "isbn13": r["isbn13"],
-                    "publisher": r["publisher"],
-                    "publication_date": r["publication_date"],
+                    "title": m.title,
+                    "author": "; ".join(m.authors) or None,
+                    "isbn13": m.isbn13,
+                    "publisher": m.publisher,
+                    "publication_date": m.pubdate,
                 },
             }
         )

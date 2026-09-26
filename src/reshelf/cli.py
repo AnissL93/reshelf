@@ -8,8 +8,6 @@ from rich.table import Table
 
 from reshelf.config import default_config, load_config, save_config
 from reshelf.calibre.export import books_to_export, export
-from reshelf.planner.committer import apply_plan, rollback_journal
-from reshelf.planner.planner import generate_plan
 from reshelf.reports.report import build_report
 from reshelf.db.database import Database
 from reshelf import pipeline
@@ -152,7 +150,7 @@ def plan(root: Path = ROOT_OPTION) -> None:
     """Generate a reviewable dry-run plan (writes reports/plan-*.json only)."""
     cfg = load_config(root)
     with Database(cfg.database.path) as db:
-        out = generate_plan(db, cfg.library.root / "reports")
+        out = pipeline.plan(cfg, db, SidecarStore(cfg))
         n = len(_json.loads(out.read_text())["actions"])
     typer.echo(f"plan written: {out} ({n} actions). No files were modified.")
 
@@ -181,15 +179,13 @@ def commit(
     if plan_path is None:
         typer.echo("no plan found; run `reshelf plan` first", err=True)
         raise typer.Exit(1)
-    plan_data = _json.loads(Path(plan_path).read_text())
     with Database(cfg.database.path) as db:
-        journal = apply_plan(
-            plan_data,
+        journal = pipeline.commit(
+            cfg,
             db,
-            library_dir=cfg.library.root / "library",
-            quarantine_dir=cfg.library.quarantine,
-            duplicates_dir=cfg.library.root / "duplicates",
-            reports_dir=reports_dir,
+            SidecarStore(cfg),
+            plan_path,
+            _bar("Committing"),
             dry_run=dry_run,
             do_quarantine=quarantine,
             do_duplicates=duplicates,
@@ -208,13 +204,12 @@ def rollback(
 ) -> None:
     """Undo a commit using its journal (removes copies, restores moves)."""
     cfg = load_config(root)
-    journal_path = cfg.library.root / "reports" / f"commit-{commit_id}.json"
-    if not journal_path.exists():
-        typer.echo(f"no journal at {journal_path}", err=True)
-        raise typer.Exit(1)
-    journal = _json.loads(journal_path.read_text())
     with Database(cfg.database.path) as db:
-        result = rollback_journal(journal, db, cfg.library.root / "library")
+        try:
+            result = pipeline.rollback(cfg, db, commit_id, _bar("Rolling back"))
+        except FileNotFoundError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(1)
     typer.echo(f"reverted={result['reverted']} skipped={result['skipped']}")
 
 
