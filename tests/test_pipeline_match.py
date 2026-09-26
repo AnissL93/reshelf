@@ -113,10 +113,21 @@ def test_match_one_ai_rank_reorders_by_ai_decision(env, monkeypatch):
     assert result[0].edition.work.title == "Dune Messiah"
 
 
+def _own_it(db, sha256, edition_id):
+    """Seed the `matches` row that ties `edition_id` to `sha256`'s file -
+    what every legitimate candidate source writes before `choose` will
+    accept it (see pipeline.choose's docstring)."""
+    file_id = db.conn.execute(
+        "SELECT id FROM files WHERE sha256 = ?", (sha256,)
+    ).fetchone()["id"]
+    db.record_match(file_id, edition_id, 80.0, 0.8, "deterministic", [], "REVIEW")
+
+
 def test_choose_writes_a_sticky_human_decision(env):
     cfg, db, store = env
     cand = _dune_candidate("1", "Dune", isbn13="9780441013593")
     edition_id = db.save_candidate(cand)
+    _own_it(db, "a" * 64, edition_id)
     db.conn.commit()
 
     book = choose(cfg, db, store, "a" * 64, edition_id)
@@ -144,6 +155,7 @@ def test_choose_preserves_all_coauthors(env):
         ),
     )
     edition_id = db.save_candidate(cand)
+    _own_it(db, "a" * 64, edition_id)
     db.conn.commit()
 
     book = choose(cfg, db, store, "a" * 64, edition_id)

@@ -238,6 +238,8 @@ def test_choose_makes_the_decision_human_and_sticky(tmp_path):
             ),
         )
     )
+    file_id = db.conn.execute("SELECT id FROM files WHERE sha256 = ?", (SHA,)).fetchone()["id"]
+    db.record_match(file_id, edition_id, 80.0, 0.8, "deterministic", [], "REVIEW")
     db.conn.commit()
     db.close()
 
@@ -255,3 +257,57 @@ def test_choose_with_an_unknown_candidate_is_404(tmp_path):
         assert c.post(
             f"/api/books/{SHA}/choose", json={"candidate_id": 9999}
         ).status_code == 404
+
+
+def test_choose_refuses_a_candidate_that_belongs_to_a_different_book(tmp_path):
+    """`candidate_id` is a global edition id - nothing on its own ties it to
+    a particular book. Regression guard for the review-queue race where a
+    digit press lands just after the cursor has advanced to a new book: the
+    stale candidate list on screen still names an edition, and without this
+    check `choose` would accept ANY existing edition id, silently rewriting
+    whatever book it's called against with another book's title/authors.
+
+    Must fail against the pre-fix `choose` (no ownership check at all,
+    just `db.edition_metadata(candidate_id) is not None`), which would
+    accept B's edition for A and mark A `resolver="human"`.
+    """
+    from reshelf.config import load_config
+    from reshelf.db.database import Database
+    from reshelf.store import index
+    from reshelf.store.models import Book, FileEntry
+    from reshelf.store.sidecar import SidecarStore
+
+    build(tmp_path)  # book A == SHA, no candidates of its own
+    cfg = load_config(tmp_path)
+    db = Database(cfg.database.path)
+    store = SidecarStore(cfg)
+
+    sha_b = "b" * 64
+    book_b = Book(sha256=sha_b, files=[FileEntry(path="incoming/other.epub", format="epub")])
+    book_b.metadata.title = "Other Book"
+    book_b.metadata.authors = ["Other Author"]
+    store.save(book_b)
+    db.conn.execute(
+        "INSERT INTO files (path, sha256, format, status) VALUES (?,?,?,?)",
+        ("incoming/other.epub", sha_b, "epub", "REVIEW"),
+    )
+    index.sync(db.conn, book_b)
+    file_b = db.conn.execute("SELECT id FROM files WHERE sha256 = ?", (sha_b,)).fetchone()["id"]
+    edition_b = db.save_candidate(
+        Candidate(
+            provider="fake",
+            provider_id="b-1",
+            edition=Edition(work=Work(title="B's Candidate", authors=[Author(name="B Author")])),
+        )
+    )
+    db.record_match(file_b, edition_b, 80.0, 0.8, "deterministic", [], "REVIEW")
+    db.conn.commit()
+    db.close()
+
+    with TestClient(create_app(tmp_path)) as c:
+        r = c.post(f"/api/books/{SHA}/choose", json={"candidate_id": edition_b})
+        assert r.status_code == 404
+
+        detail = c.get(f"/api/books/{SHA}").json()
+        assert detail["sidecar"]["source"]["resolver"] != "human"
+        assert detail["sidecar"]["metadata"]["title"] == "Old Title"

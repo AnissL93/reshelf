@@ -46,12 +46,16 @@ export default function Review() {
   // Fetch the current book's full detail (candidates, sidecar) whenever the
   // cursor lands on a new sha. Race-guarded the same way Library.tsx guards
   // its list fetch: a slow response for a book we've since navigated past
-  // must never clobber what's on screen.
+  // must never clobber what's on screen. `book` is cleared synchronously
+  // here, before the new fetch even starts - it must not still read as
+  // "book B's detail" for a heartbeat after the cursor has moved to book B,
+  // or a digit key pressed in that window would pick a stale candidate
+  // (book A's) while calling `choose` against the new sha (book B). The
+  // `currentBook` guard below is the second, belt-and-braces layer of the
+  // same fix - this is the one that stops it from ever being visible.
   useEffect(() => {
-    if (!current) {
-      setBook(null);
-      return;
-    }
+    setBook(null);
+    if (!current) return;
     let cancelled = false;
     setBookLoading(true);
     setBookError(null);
@@ -76,6 +80,13 @@ export default function Review() {
     // re-renders.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current?.sha256]);
+
+  // The only safe read of `book`: only valid when it actually is the
+  // detail for the book the cursor is on right now. Every render and the
+  // digit-key handler go through this, never `book` directly - so a
+  // still-in-flight or just-superseded fetch can never be acted on as if
+  // it were the current book's.
+  const currentBook = book && current && book.sha256 === current.sha256 ? book : null;
 
   const advance = useCallback(() => {
     setActionError(null);
@@ -121,7 +132,11 @@ export default function Review() {
       if (!current) return;
 
       if (e.key >= "1" && e.key <= "9") {
-        const candidate = book?.candidates[Number(e.key) - 1];
+        // currentBook, not book: while the fetch for a just-advanced-to
+        // book is still in flight (or arrives for a book we've since left),
+        // currentBook is null and this is a no-op rather than picking the
+        // previous book's candidate against the new book's sha.
+        const candidate = currentBook?.candidates[Number(e.key) - 1];
         if (candidate) handleChoose(candidate.edition_id);
         return;
       }
@@ -147,7 +162,7 @@ export default function Review() {
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [current, book, handleChoose, advance, retreat]);
+  }, [current, currentBook, handleChoose, advance, retreat]);
 
   if (loadError) return <p className="error">{loadError}</p>;
   if (!queue) return <p className="muted">Loading…</p>;
@@ -188,17 +203,28 @@ export default function Review() {
           {actionError && <p className="error">{actionError}</p>}
           {bookError && <p className="error">{bookError}</p>}
 
-          {bookLoading && !book && <p className="muted">Loading…</p>}
+          {/* Not `bookLoading && !book` - `book` is cleared on every cursor
+              move (see the fetch effect), so this now correctly shows the
+              pending state on every transition, not just the very first
+              load. Without it, the previous book's title/author/candidates
+              would stay on screen - under an already-advanced counter -
+              until the new fetch resolved. */}
+          {(bookLoading || !currentBook) && !bookError && (
+            <p className="muted">Loading…</p>
+          )}
 
-          {book && current && (
+          {currentBook && (
             <div className="review-book">
-              <h2>{book.sidecar.metadata.title || `Untitled (${current.sha256.slice(0, 10)})`}</h2>
+              <h2>
+                {currentBook.sidecar.metadata.title ||
+                  `Untitled (${currentBook.sha256.slice(0, 10)})`}
+              </h2>
               <p className="muted">
-                {book.sidecar.metadata.authors.join(", ") || "unknown author"} · resolver:{" "}
-                {book.sidecar.source.resolver} · confidence{" "}
-                {book.sidecar.source.confidence.toFixed(2)}
+                {currentBook.sidecar.metadata.authors.join(", ") || "unknown author"} · resolver:{" "}
+                {currentBook.sidecar.source.resolver} · confidence{" "}
+                {currentBook.sidecar.source.confidence.toFixed(2)}
               </p>
-              <CandidateList candidates={book.candidates} onChoose={handleChoose} showIndex />
+              <CandidateList candidates={currentBook.candidates} onChoose={handleChoose} showIndex />
             </div>
           )}
         </>

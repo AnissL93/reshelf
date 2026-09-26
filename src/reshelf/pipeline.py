@@ -575,8 +575,27 @@ def choose(
 
     Reuses `Database.edition_metadata` for the same reason `_sync_matched_sidecar`
     does: a hand-rolled `... LIMIT 1` author join silently drops co-authors.
+
+    `candidate_id` is a global edition id - nothing about it names a book on
+    its own. A `matches` row is what ties an edition to a particular file,
+    and every legitimate source (the batch matcher, `match_one`'s rematch,
+    and this function's own AUTO_ACCEPT row) writes one via `record_match`
+    before a UI ever offers the candidate for picking. So a candidate with
+    no `matches` row for this sha256 is not this book's to choose - refusing
+    it here is what stops a stale/raced client (e.g. the review queue
+    advancing mid-flight) from silently writing one book's candidate onto
+    another. Joined on `files.sha256` rather than `_row_for`'s single file
+    row, matching how `_candidates()` in books.py already scopes "this
+    book's candidates" across every duplicate-path file row for the sha.
     """
     row = _row_for(db, sha256)
+    owned = db.conn.execute(
+        "SELECT 1 FROM matches m JOIN files f ON f.id = m.file_id"
+        " WHERE f.sha256 = ? AND m.edition_id = ? LIMIT 1",
+        (sha256, candidate_id),
+    ).fetchone()
+    if owned is None:
+        raise KeyError(candidate_id)
     edition = db.edition_metadata(candidate_id)
     if edition is None:
         raise KeyError(candidate_id)
