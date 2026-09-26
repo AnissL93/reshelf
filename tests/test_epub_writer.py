@@ -2,9 +2,34 @@ import zipfile
 
 import pytest
 
-from reshelf.convert.epub_writer import UnsupportedEpub, rewrite_metadata, write_epub
+from reshelf.convert.epub_writer import (
+    UnsupportedEpub,
+    find_opf,
+    rewrite_metadata,
+    write_epub,
+)
 from reshelf.store.models import BookMetadata
 from tests.helpers import make_epub
+
+_CONTAINER = """<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>"""
+
+_SELF_CLOSING_OPF = """<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Old</dc:title>
+    <dc:creator/>
+    <dc:language/>
+  </metadata>
+  <manifest>
+    <item id="c1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine><itemref idref="c1"/></spine>
+</package>"""
 
 
 def test_mimetype_is_first_and_stored_uncompressed(tmp_path):
@@ -114,3 +139,48 @@ def test_a_failed_rewrite_leaves_the_original_intact(tmp_path, monkeypatch):
     from reshelf.extractors.epub import extract_epub
 
     assert extract_epub(src).title == "Old Title"
+
+
+def test_rewrite_metadata_replaces_self_closing_dc_elements(tmp_path):
+    """A self-closed <dc:language/> or <dc:creator/> must be updated in
+    place, not left behind alongside a newly-inserted duplicate."""
+    src = tmp_path / "b.epub"
+    with zipfile.ZipFile(src, "w") as z:
+        z.writestr("mimetype", "application/epub+zip")
+        z.writestr("META-INF/container.xml", _CONTAINER)
+        z.writestr("content.opf", _SELF_CLOSING_OPF)
+        z.writestr("chapter1.xhtml", "<html><body>text</body></html>")
+
+    rewrite_metadata(
+        src, BookMetadata(title="New", authors=["A1", "A2"], language="fr")
+    )
+
+    with zipfile.ZipFile(src) as z:
+        opf = z.read("content.opf").decode()
+
+    assert opf.count("<dc:language") == 1
+    assert "<dc:language>fr</dc:language>" in opf
+    assert opf.count("<dc:creator") == 2
+    assert "<dc:creator/>" not in opf
+
+
+def test_find_opf_skips_a_stray_opf_that_is_not_the_package_document(tmp_path):
+    path = tmp_path / "b.epub"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("mimetype", "application/epub+zip")
+        z.writestr("stray_backup/old_metadata.opf", "<notpackage>junk</notpackage>")
+        z.writestr("content.opf", _SELF_CLOSING_OPF)
+
+    with zipfile.ZipFile(path) as z:
+        assert find_opf(z) == "content.opf"
+
+
+def test_find_opf_raises_when_no_document_is_a_real_package(tmp_path):
+    path = tmp_path / "b.epub"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("mimetype", "application/epub+zip")
+        z.writestr("not_a_package.opf", "<notpackage>junk</notpackage>")
+
+    with zipfile.ZipFile(path) as z:
+        with pytest.raises(UnsupportedEpub):
+            find_opf(z)

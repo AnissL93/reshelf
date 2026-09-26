@@ -149,14 +149,28 @@ def find_opf(z: zipfile.ZipFile) -> str:
     match = re.search(r'full-path="([^"]+)"', container)
     if match:
         return match.group(1)
-    opfs = [n for n in z.namelist() if n.lower().endswith(".opf")]
-    if not opfs:
-        raise UnsupportedEpub("no OPF found")
-    return opfs[0]
+    # Fallback: no (usable) container.xml. Only accept a candidate that is
+    # actually a package document - a stray *.opf elsewhere in the zip must
+    # not be mistaken for the real one.
+    for name in z.namelist():
+        if name.lower().endswith(".opf"):
+            if "<package" in z.read(name).decode("utf-8", "replace"):
+                return name
+    raise UnsupportedEpub("no OPF found")
+
+
+def _tag_pattern(tag: str) -> re.Pattern:
+    """Match a dc:<tag> element, self-closing or with a body.
+
+    The self-closing form must come first: tried second, `[^>]*>` would
+    swallow a `/>` and then hunt for a `</dc:tag>` that may not belong to
+    this element (or may not exist at all).
+    """
+    return re.compile(rf"<dc:{tag}\b[^>]*/>|<dc:{tag}\b[^>]*>.*?</dc:{tag}>", re.DOTALL)
 
 
 def _replace_tag(opf: str, tag: str, value: str | None) -> str:
-    pattern = re.compile(rf"<dc:{tag}\b[^>]*>.*?</dc:{tag}>", re.DOTALL)
+    pattern = _tag_pattern(tag)
     if value is None:
         return pattern.sub("", opf)
     replacement = f"<dc:{tag}>{escape(value)}</dc:{tag}>"
@@ -176,7 +190,7 @@ def rewrite_metadata(path: Path, metadata: BookMetadata) -> None:
         raise UnsupportedEpub(str(e)) from e
 
     opf = _replace_tag(opf, "title", metadata.title)
-    opf = re.sub(r"<dc:creator\b[^>]*>.*?</dc:creator>", "", opf, flags=re.DOTALL)
+    opf = _tag_pattern("creator").sub("", opf)
     creators = "".join(
         f"<dc:creator>{escape(a)}</dc:creator>" for a in metadata.authors
     )
