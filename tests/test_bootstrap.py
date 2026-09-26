@@ -100,15 +100,15 @@ def test_reindex_restores_the_index_after_the_tables_are_wiped(tmp_path):
     db.close()
 
 
-def test_rebuild_batches_commits_for_performance(tmp_path):
-    """Verify rebuild() uses commit=False in sync loop, committing once at end."""
+def test_rebuild_produces_correct_results_from_batched_syncs(tmp_path):
+    """Verify rebuild() correctly indexes books even with batched commits."""
     cfg = default_config(tmp_path)
     store = SidecarStore(cfg)
     for n in range(3):
         store.save(Book(sha256=str(n) * 64))
 
     import sqlite3
-    c = sqlite3.connect(tmp_path / "i.sqlite3")
+    c = sqlite3.connect(tmp_path / "i.sqlite3", isolation_level=None)
     c.row_factory = sqlite3.Row
     c.executescript(
         "CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT, sha256 TEXT,"
@@ -116,8 +116,38 @@ def test_rebuild_batches_commits_for_performance(tmp_path):
     )
     migrate(c)
 
-    # rebuild should produce correct results even with batched commits
+    # rebuild should produce correct results and be queryable after batched commits
     count = index.rebuild(c, store)
     assert count == 3
     assert index.query(c)[1] == 3
     c.close()
+
+
+def test_migrate_json_preserves_all_co_authors_from_matched_metadata(tmp_path):
+    """Matched books with multiple authors retain all of them, not just the first."""
+    cfg, db, store = seeded(tmp_path)
+
+    # Add a work with two authors
+    db.conn.execute("INSERT INTO works (id, canonical_title) VALUES (1, 'Collaborative Work')")
+    db.conn.execute("INSERT INTO authors (id, canonical_name) VALUES (10, 'Author One')")
+    db.conn.execute("INSERT INTO authors (id, canonical_name) VALUES (11, 'Author Two')")
+    db.conn.execute("INSERT INTO work_authors (work_id, author_id) VALUES (1, 10)")
+    db.conn.execute("INSERT INTO work_authors (work_id, author_id) VALUES (1, 11)")
+
+    # Add edition for this work
+    db.conn.execute(
+        "INSERT INTO editions (id, work_id, isbn13) VALUES (1, 1, '9780000000001')"
+    )
+
+    # Update the dune file to reference this edition
+    db.conn.execute(
+        "UPDATE files SET matched_edition_id = 1 WHERE sha256 = ?",
+        ("a" * 64,),
+    )
+    db.conn.commit()
+
+    # Migrate and check both authors are preserved
+    migrate_json(db, store, NOOP)
+    book = store.load("a" * 64)
+    assert book.metadata.authors == ["Author One", "Author Two"]
+    db.close()

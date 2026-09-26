@@ -11,21 +11,6 @@ from reshelf.store.sidecar import SidecarStore
 Progress = Callable[[int, int | None, str], None]
 
 
-def _matched_metadata(db: Database, file_id: int) -> dict:
-    """Provider metadata for a MATCHED file, from the candidate cache."""
-    row = db.conn.execute(
-        "SELECT w.canonical_title AS title, e.isbn13, e.isbn10, e.publisher,"
-        " e.publication_date, e.language,"
-        " (SELECT a.canonical_name FROM work_authors wa"
-        "   JOIN authors a ON a.id = wa.author_id"
-        "   WHERE wa.work_id = w.id LIMIT 1) AS author"
-        " FROM files f JOIN editions e ON e.id = f.matched_edition_id"
-        " JOIN works w ON w.id = e.work_id WHERE f.id = ?",
-        (file_id,),
-    ).fetchone()
-    return dict(row) if row else {}
-
-
 def migrate_json(db: Database, store: SidecarStore, progress: Progress) -> int:
     rows = db.conn.execute(
         "SELECT * FROM files WHERE sha256 IS NOT NULL ORDER BY id"
@@ -49,11 +34,15 @@ def migrate_json(db: Database, store: SidecarStore, progress: Progress) -> int:
         if not any(f.path == entry.path for f in book.files):
             book.files.append(entry)
 
-        matched = _matched_metadata(db, row["id"]) if row["matched_edition_id"] else {}
+        matched = {}
+        if row["matched_edition_id"]:
+            matched = db.edition_metadata(row["matched_edition_id"]) or {}
+
         m = book.metadata
         m.title = matched.get("title") or row["title_raw"] or m.title
-        if matched.get("author"):
-            m.authors = [matched["author"]]
+        if matched.get("authors"):
+            # Split aggregated authors (group_concat result) into a list
+            m.authors = [a.strip() for a in matched["authors"].split(";") if a.strip()]
         elif row["author_raw"] and not m.authors:
             m.authors = [a.strip() for a in row["author_raw"].split(";") if a.strip()]
         m.isbn13 = matched.get("isbn13") or row["isbn_raw"] or m.isbn13
@@ -66,8 +55,9 @@ def migrate_json(db: Database, store: SidecarStore, progress: Progress) -> int:
         book.source.confidence = row["match_confidence"] or 0.0
 
         store.save(book, row["path"])
-        index.sync(db.conn, book)
+        index.sync(db.conn, book, commit=False)
         written += 1
+    db.conn.commit()
     return written
 
 

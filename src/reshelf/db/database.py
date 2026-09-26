@@ -315,3 +315,16 @@ class Database:
             " updated_at=? WHERE id=?",
             (edition_id, confidence, status, _now(), file_id),
         )
+
+    def edition_metadata(self, edition_id: int) -> dict | None:
+        """Fetch edition metadata including all co-authors as aggregated list."""
+        row = self.conn.execute(
+            "SELECT e.id, w.canonical_title AS title, e.isbn13, e.isbn10,"
+            " e.publisher, e.publication_date, e.language,"
+            " (SELECT group_concat(a.canonical_name, '; ')"
+            "    FROM work_authors wa JOIN authors a ON a.id = wa.author_id"
+            "   WHERE wa.work_id = w.id) AS authors"
+            " FROM editions e JOIN works w ON w.id = e.work_id WHERE e.id = ?",
+            (edition_id,),
+        ).fetchone()
+        return dict(row) if row else None
