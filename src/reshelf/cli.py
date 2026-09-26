@@ -271,6 +271,31 @@ def migrate_json_cmd(root: Path = ROOT_OPTION) -> None:
 
 
 @app.command()
+def serve(
+    root: Path = ROOT_OPTION,
+    host: Optional[str] = typer.Option(None, "--host"),
+    port: Optional[int] = typer.Option(None, "--port"),
+) -> None:
+    """Run the web app."""
+    import uvicorn
+
+    from reshelf.db.database import LockError
+    from reshelf.web.app import create_app
+
+    cfg = load_config(root)
+    try:
+        fastapi_app = create_app(root)
+    except LockError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1)
+    uvicorn.run(
+        fastapi_app,
+        host=host or cfg.web.host,
+        port=port or cfg.web.port,
+    )
+
+
+@app.command()
 def reindex(root: Path = ROOT_OPTION) -> None:
     """Rebuild the derived search index from the sidecars."""
     from reshelf.store.bootstrap import reindex as _reindex
