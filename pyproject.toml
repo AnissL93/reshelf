@@ -29,6 +29,7 @@ reshelf = "reshelf.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/reshelf"]
+artifacts = ["src/reshelf/web/static/**"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
