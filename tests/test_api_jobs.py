@@ -379,3 +379,127 @@ def test_get_journal_returns_its_full_contents(client):
     body = client.get("/api/journals/abc123").json()
     assert body["commit_id"] == "abc123"
     assert len(body["actions"]) == 2
+
+
+# -- I2: the preview must describe the commit that will actually run ------
+
+
+def _make_unresolved_plan(client):
+    """A plan holding one import and one quarantine action - the real
+    library's shape, where quarantine rows outnumber imports 3:1."""
+    state = client.app.state.reshelf
+    db, store = state.db, state.store
+    for path, sha, status, title in [
+        ("/x/tbp.epub", "aaa", "MATCHED", "The Three-Body Problem"),
+        ("/x/mystery.pdf", "bbb", "UNRESOLVED", None),
+    ]:
+        fid, _ = db.upsert_file(path, 10, 1, path.rsplit(".", 1)[1])
+        db.set_hash(fid, sha)
+        db.set_file_match(fid, None, 0.99, status)
+        book = Book(sha256=sha, files=[FileEntry(path=path, format="epub")])
+        if title:
+            book.metadata.title = title
+            book.metadata.authors = ["Liu Cixin"]
+            book.metadata.pubdate = "2014"
+        store.save(book, path)
+    db.conn.commit()
+    out = generate_plan(db, store, state.root / "reports")
+    return out.name.removeprefix("plan-").removesuffix(".json")
+
+
+def test_plan_preview_marks_the_actions_a_plain_commit_will_not_perform(client):
+    """apply_plan skips every quarantine/mark_duplicate action unless the
+    commit is given the matching flag, and the UI does not pass them - so
+    the preview used to promise ~74% moves that never happened."""
+    plan_id = _make_unresolved_plan(client)
+    actions = client.get(f"/api/plans/{plan_id}").json()["actions"]
+    by_kind = {a["action"]: a for a in actions}
+
+    assert by_kind["import"]["will_apply"] is True
+    assert by_kind["import"]["dest"]
+
+    assert by_kind["quarantine"]["will_apply"] is False
+    # and no destination is promised for something that will not move
+    assert "dest" not in by_kind["quarantine"]
+
+
+def test_plan_preview_honours_the_same_flags_the_commit_takes(client):
+    plan_id = _make_unresolved_plan(client)
+    actions = client.get(f"/api/plans/{plan_id}?quarantine=true").json()["actions"]
+    quarantine = next(a for a in actions if a["action"] == "quarantine")
+    assert quarantine["will_apply"] is True
+    assert quarantine["dest"].endswith("/quarantine/mystery.pdf")
+
+
+# -- I3: the commands that move files honour the previews' containment ----
+
+
+def test_commit_refuses_a_plan_path_outside_the_reports_dir(client, tmp_path):
+    """/plans/{id} routes through resolve_inside_root; the commit that
+    actually applies a plan took Path(args["plan"]) raw."""
+    outside = tmp_path.parent / "evil-plan.json"
+    outside.write_text(json.dumps({"plan_id": "evil", "actions": []}))
+    job_id = client.post(
+        "/api/jobs",
+        json={"command": "commit", "args": {"confirmed": True, "plan": str(outside)}},
+    ).json()["job_id"]
+    job = wait(client, job_id)
+    assert job["status"] == "failed"
+    assert "no such plan" in job["error"]
+
+
+def test_rollback_refuses_a_journal_that_resolves_outside_the_reports_dir(
+    client, tmp_path
+):
+    """A journal is a list of paths rollback will shutil.move. Loading one
+    from outside reports/ hands whoever wrote it that move list.
+
+    Two ways in: a `..` in the id (blocked today only by FastAPI's path
+    converter, and only over HTTP), and a symlink under reports/, which
+    nothing checked at all - Path.exists() happily follows it.
+    """
+    victim = tmp_path / "incoming" / "keep-me.epub"
+    victim.write_bytes(b"MINE")
+    outside = tmp_path.parent / "evil-journal.json"
+    outside.write_text(
+        json.dumps(
+            {
+                "commit_id": "evil",
+                "actions": [
+                    {
+                        "action": "quarantine",
+                        "src": str(tmp_path.parent / "stolen.epub"),
+                        "dest": str(victim),
+                    }
+                ],
+                "skipped": [],
+            }
+        )
+    )
+    (tmp_path / "reports" / "commit-sneaky.json").symlink_to(outside)
+
+    job_id = client.post(
+        "/api/jobs",
+        json={"command": "rollback", "args": {"confirmed": True, "commit_id": "sneaky"}},
+    ).json()["job_id"]
+    job = wait(client, job_id)
+    assert job["status"] == "failed"
+    assert "no journal" in job["error"]
+    assert victim.exists()  # the move the outside journal asked for never ran
+    assert not (tmp_path.parent / "stolen.epub").exists()
+
+
+def test_scan_refuses_a_path_outside_the_library_root(client, tmp_path):
+    job_id = client.post(
+        "/api/jobs", json={"command": "scan", "args": {"path": "/etc"}}
+    ).json()["job_id"]
+    job = wait(client, job_id)
+    assert job["status"] == "failed"
+    assert "no such directory" in job["error"]
+
+
+def test_scan_still_accepts_a_directory_inside_the_root(client, tmp_path):
+    job_id = client.post(
+        "/api/jobs", json={"command": "scan", "args": {"path": str(tmp_path / "incoming")}}
+    ).json()["job_id"]
+    assert wait(client, job_id)["status"] == "done"

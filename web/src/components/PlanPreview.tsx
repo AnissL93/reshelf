@@ -14,6 +14,11 @@ export type PreviewRow = {
 type PlanPreviewProps = {
   title: string;
   rows: PreviewRow[];
+  /** Plan rows the confirm button will NOT act on (quarantine and
+   * mark_duplicate, which need flags this screen does not send). Counted
+   * rather than listed: showing them as rows made the preview promise
+   * moves that never happened. */
+  notApplied?: number;
   confirmLabel: string;
   onConfirm: () => void;
   confirming: boolean;
@@ -25,6 +30,7 @@ const SAMPLE_LIMIT = 50;
 export default function PlanPreview({
   title,
   rows,
+  notApplied = 0,
   confirmLabel,
   onConfirm,
   confirming,
@@ -38,7 +44,7 @@ export default function PlanPreview({
     <div className="plan-preview">
       <h3>{title}</h3>
       {rows.length === 0 ? (
-        <p className="muted">No actions in this plan.</p>
+        <p className="muted">Nothing here will be applied.</p>
       ) : (
         <>
           <ul className="plan-preview-counts">
@@ -71,6 +77,13 @@ export default function PlanPreview({
             <p className="muted">…and {rows.length - sample.length} more.</p>
           )}
         </>
+      )}
+      {notApplied > 0 && (
+        <p className="muted">
+          {notApplied} further planned action{notApplied === 1 ? "" : "s"} (quarantine and
+          duplicate moves) will <strong>not</strong> be performed - run{" "}
+          <code>reshelf commit --quarantine --duplicates</code> for those.
+        </p>
       )}
       {error && <p className="error">{error}</p>}
       <button disabled={confirming || rows.length === 0} onClick={onConfirm}>

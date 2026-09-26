@@ -161,7 +161,12 @@ def _reports_dir(state: AppState) -> Path:
 
 
 @router.get("/plans/{plan_id}")
-def get_plan(plan_id: str, state: AppState = Depends(get_state)) -> dict:
+def get_plan(
+    plan_id: str,
+    quarantine: bool = False,
+    duplicates: bool = False,
+    state: AppState = Depends(get_state),
+) -> dict:
     path = resolve_inside_root(_reports_dir(state), f"plan-{plan_id}.json")
     if path is None:
         raise HTTPException(404, "no such plan")
@@ -174,11 +179,24 @@ def get_plan(plan_id: str, state: AppState = Depends(get_state)) -> dict:
     # land. unique_dest only stats (and, on a same-named collision, hashes)
     # an existing file - read-only, so a plan can be previewed any number of
     # times with no side effects.
+    #
+    # `will_apply` is the honest part. A plan lists a `quarantine` action
+    # per UNRESOLVED file and a `mark_duplicate` per DUPLICATE, but
+    # apply_plan skips both unless the commit is given the matching flag -
+    # and the UI does not pass them, so on a real library three quarters
+    # of the rows were moves that would never happen. The flags here are
+    # the same two `commit` takes, so the preview answers for the commit
+    # the caller is actually about to run. A row that will not be applied
+    # gets no `dest` either: there is no destination to promise.
     root = Path(state.cfg.library.root)
     targets = {"quarantine": state.cfg.library.quarantine, "mark_duplicate": root / "duplicates"}
+    enabled = {"import": True, "quarantine": quarantine, "mark_duplicate": duplicates}
     for action in plan.get("actions", []):
         kind = action.get("action")
         sha256 = (action.get("preconditions") or {}).get("sha256")
+        action["will_apply"] = enabled.get(kind, False)
+        if not action["will_apply"]:
+            continue
         if kind == "import":
             dest, _ = unique_dest(dest_for(action, root / "library"), sha256)
             action["dest"] = str(dest)

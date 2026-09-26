@@ -304,7 +304,10 @@ function CommitSection({
       {plan && (
         <PlanPreview
           title={`Plan ${plan.plan_id}`}
-          rows={plan.actions.map((a) => ({ action: a.action, src: a.file, dest: a.dest }))}
+          rows={plan.actions
+            .filter((a) => a.will_apply)
+            .map((a) => ({ action: a.action, src: a.file, dest: a.dest }))}
+          notApplied={plan.actions.filter((a) => !a.will_apply).length}
           confirmLabel="Apply this plan"
           onConfirm={applyPlan}
           confirming={committing}
