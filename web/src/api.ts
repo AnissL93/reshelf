@@ -191,6 +191,49 @@ export const TERMINAL_JOB_STATUSES: readonly JobStatus[] = [
 
 export type JobArgs = Record<string, unknown>;
 
+// A `plan` job's `message` is only the plan file's path - fetching its
+// actions (to show `src -> dest` before a commit may be confirmed) needs
+// this. `dest` is added server-side (jobs.py get_plan): it isn't in the
+// plan file itself, which only records the source file until commit time.
+export type PlanAction = {
+  file: string;
+  action: "import" | "quarantine" | "mark_duplicate";
+  dest?: string;
+  metadata_changes?: Record<string, unknown>;
+  [extra: string]: unknown;
+};
+
+export type Plan = {
+  plan_id: string;
+  created_at: string;
+  actions: PlanAction[];
+};
+
+// A `reports/commit-*.json` journal, as written by planner/committer.py's
+// apply_plan and read back by jobs.py's /journals endpoints.
+export type JournalAction = {
+  action: string;
+  src: string;
+  dest: string;
+  moved?: boolean;
+  [extra: string]: unknown;
+};
+
+export type JournalSummary = {
+  commit_id: string;
+  created_at: string | null;
+  actions: number;
+};
+
+export type Journal = {
+  commit_id: string;
+  plan_id?: string | null;
+  created_at: string;
+  dry_run?: boolean;
+  actions: JournalAction[];
+  skipped: { file: string; action: string; reason: string }[];
+};
+
 /** `commit`/`rollback` need this. The server checks args.confirmed === true
  * by identity, not truthiness, and 409s on anything else (a stringified
  * "true" included). The `confirmed: true` literal type - not `boolean` -
@@ -319,6 +362,11 @@ export const createConfirmedJob = (
 
 export const cancelJob = (id: number) =>
   req<{ cancelled: boolean }>(`/jobs/${id}`, { method: "DELETE" });
+
+export const getPlan = (planId: string) => req<Plan>(`/plans/${encodeURIComponent(planId)}`);
+export const listJournals = () => req<JournalSummary[]>("/journals");
+export const getJournal = (commitId: string) =>
+  req<Journal>(`/journals/${encodeURIComponent(commitId)}`);
 
 /** Live job progress over SSE. Returns an unsubscribe function. The server
  * closes/keeps sending snapshots until a terminal status is reached. */

@@ -175,6 +175,46 @@ Points at a new folder to create a library, or an existing one to merge
 into (Calibre skips title/author duplicates by default). **Close Calibre
 first** -- `calibredb` refuses to write to a library while the GUI holds it.
 
+## Web app
+
+```bash
+reshelf serve --root /mnt/data/Books
+```
+
+Runs a browser UI over the same library the CLI operates on -- library
+browsing, a keyboard-driven review queue, metadata editing, and a Jobs
+page that drives the whole pipeline (scan/extract/match/resolve/plan/
+reindex, plus the gated commit/rollback below) with live progress.
+
+By default it binds to `127.0.0.1:8080`, i.e. this machine only.
+**There is no authentication** -- anyone who can reach that address and
+port can browse, edit, and commit/rollback the library. Do not point
+`web.host` at `0.0.0.0` or a public interface without putting your own
+auth (a reverse proxy, an SSH tunnel, ...) in front of it.
+
+Only one `reshelf` process (CLI or `serve`) may hold the library's lock
+at a time, so stop any running CLI command before starting the server.
+
+If you already have a library from before the web app existed, bootstrap
+it once before serving:
+
+```bash
+reshelf migrate-json --root /mnt/data/Books   # writes a sidecar for every hashed file
+reshelf reindex --root /mnt/data/Books        # (re)builds the search index the UI queries
+```
+
+The per-book JSON sidecars under `metadata/` are the source of truth for
+everything the UI shows; the sqlite database (`db/`) is a disposable,
+rebuildable search index over them -- `reshelf reindex` regenerates it
+from the sidecars at any time, so losing or deleting it loses nothing.
+
+AI-assisted matching and resolve stay off, everywhere in the UI, until
+`ai.provider` is set on the Settings page (or in `config.yaml`) -- there
+is no default provider.
+
+Docker packaging for the web app is a later sub-project; for now, run it
+the same way as the CLI, inside your own venv.
+
 ## Configuration
 
 `config.yaml` in the library root (created by `init`). Notable settings:

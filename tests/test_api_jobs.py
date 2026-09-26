@@ -7,6 +7,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from reshelf.config import default_config, save_config
+from reshelf.planner.planner import generate_plan
+from reshelf.store.models import Book, FileEntry
 from reshelf.web.api.jobs import job_events
 from reshelf.web.app import create_app
 from reshelf.web.jobs import COMMANDS
@@ -262,3 +264,78 @@ def test_finish_logs_when_the_terminal_publish_fails(client, caplog):
         "publish" in r.getMessage().lower() and str(job_id) in r.getMessage()
         for r in caplog.records
     )
+
+
+# -- /api/plans and /api/journals ----------------------------------------
+#
+# The commit gate (Task 24) only makes sense if the UI can show the user a
+# real plan/journal before they confirm - these cover the two read-only
+# endpoints that make that possible.
+
+
+def _make_plan(client):
+    state = client.app.state.reshelf
+    db, store = state.db, state.store
+    fid, _ = db.upsert_file("/x/tbp.epub", 10, 1, "epub")
+    db.set_hash(fid, "aaa")
+    db.set_file_match(fid, None, 0.99, "MATCHED")
+    book = Book(sha256="aaa", files=[FileEntry(path="/x/tbp.epub", format="epub")])
+    book.metadata.title = "The Three-Body Problem"
+    book.metadata.authors = ["Liu Cixin"]
+    book.metadata.pubdate = "2014"
+    store.save(book, "/x/tbp.epub")
+    db.conn.commit()
+    out = generate_plan(db, store, state.root / "reports")
+    return out.name.removeprefix("plan-").removesuffix(".json")
+
+
+def test_get_an_unknown_plan_is_404(client):
+    assert client.get("/api/plans/does-not-exist").status_code == 404
+
+
+def test_get_plan_annotates_actions_with_their_destination(client):
+    plan_id = _make_plan(client)
+    body = client.get(f"/api/plans/{plan_id}").json()
+    assert body["plan_id"] == plan_id
+    [action] = body["actions"]
+    assert action["action"] == "import"
+    assert action["dest"].endswith("Liu Cixin/The Three-Body Problem (2014)/The Three-Body Problem.epub")
+
+
+def test_journals_list_is_empty_with_no_commits(client):
+    assert client.get("/api/journals").json() == []
+
+
+def _write_journal(root, commit_id, created_at, n_actions=1):
+    journal = {
+        "commit_id": commit_id,
+        "created_at": created_at,
+        "actions": [
+            {"action": "import", "src": f"/x/{i}.epub", "dest": f"/lib/{i}.epub"}
+            for i in range(n_actions)
+        ],
+        "skipped": [],
+    }
+    (root / "reports" / f"commit-{commit_id}.json").write_text(json.dumps(journal))
+
+
+def test_journals_lists_newest_first_with_action_counts(client):
+    state = client.app.state.reshelf
+    _write_journal(state.root, "older", "2024-01-01T00:00:00+00:00", n_actions=1)
+    _write_journal(state.root, "newer", "2024-06-01T00:00:00+00:00", n_actions=3)
+    body = client.get("/api/journals").json()
+    assert [j["commit_id"] for j in body] == ["newer", "older"]
+    assert body[0]["actions"] == 3
+    assert body[1]["actions"] == 1
+
+
+def test_get_an_unknown_journal_is_404(client):
+    assert client.get("/api/journals/does-not-exist").status_code == 404
+
+
+def test_get_journal_returns_its_full_contents(client):
+    state = client.app.state.reshelf
+    _write_journal(state.root, "abc123", "2024-06-01T00:00:00+00:00", n_actions=2)
+    body = client.get("/api/journals/abc123").json()
+    assert body["commit_id"] == "abc123"
+    assert len(body["actions"]) == 2

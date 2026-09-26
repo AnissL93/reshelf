@@ -2,10 +2,12 @@ import asyncio
 import contextlib
 import json
 import threading
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from sse_starlette.sse import EventSourceResponse
 
+from reshelf.planner.committer import dest_for
 from reshelf.web.deps import AppState, get_state
 from reshelf.web.jobs import TERMINAL, UnknownCommand
 from reshelf.web.schemas import JobCreate
@@ -133,3 +135,68 @@ async def job_events(job_id: int, state: AppState = Depends(get_state)):
                 iterator.close()
 
     return EventSourceResponse(stream())
+
+
+# -- plan / journal previews (reports/*.json the pipeline already writes) --
+#
+# Neither file is a job result you can just read off the job row: a `plan`
+# job's `message` is only the plan's path, and a `commit` job's args only
+# name a journal by id. The commit gate (NEEDS_CONFIRMATION above) is only
+# real if the UI can show the user what a plan/journal actually contains
+# before they confirm - these two GETs exist for exactly that, and touch
+# nothing.
+
+
+def _reports_dir(state: AppState) -> Path:
+    return Path(state.cfg.library.root) / "reports"
+
+
+@router.get("/plans/{plan_id}")
+def get_plan(plan_id: str, state: AppState = Depends(get_state)) -> dict:
+    path = _reports_dir(state) / f"plan-{plan_id}.json"
+    if not path.exists():
+        raise HTTPException(404, "no such plan")
+    plan = json.loads(path.read_text())
+    # Annotate each action with the destination the real commit would use,
+    # so the preview can show real `src -> dest` rows rather than just the
+    # source file. This mirrors committer.apply_plan's own placement logic
+    # (dest_for for imports; quarantine/duplicates keep their basename) but
+    # never touches the filesystem or the database - a plan can be previewed
+    # any number of times without side effects.
+    root = Path(state.cfg.library.root)
+    targets = {"quarantine": state.cfg.library.quarantine, "mark_duplicate": root / "duplicates"}
+    for action in plan.get("actions", []):
+        kind = action.get("action")
+        if kind == "import":
+            action["dest"] = str(dest_for(action, root / "library"))
+        elif kind in targets:
+            action["dest"] = str(targets[kind] / Path(action["file"]).name)
+    return plan
+
+
+@router.get("/journals")
+def list_journals(state: AppState = Depends(get_state)) -> list[dict]:
+    reports = _reports_dir(state)
+    out = []
+    for path in reports.glob("commit-*.json") if reports.exists() else []:
+        try:
+            journal = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue  # a partially-written or unreadable file; skip it silently
+        out.append(
+            {
+                "commit_id": journal.get("commit_id", path.stem.removeprefix("commit-")),
+                "created_at": journal.get("created_at"),
+                "actions": len(journal.get("actions", [])),
+            }
+        )
+    out.sort(key=lambda j: j["created_at"] or "", reverse=True)
+    return out
+
+
+@router.get("/journals/{commit_id}")
+def get_journal(commit_id: str, state: AppState = Depends(get_state)) -> dict:
+    path = _reports_dir(state) / f"commit-{commit_id}.json"
+    if not path.exists():
+        raise HTTPException(404, "no such journal")
+    return json.loads(path.read_text())
