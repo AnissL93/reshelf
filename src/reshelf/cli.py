@@ -1,51 +1,37 @@
 import json as _json
-import re
 from pathlib import Path
 from typing import Optional
 
-import httpx
 import typer
 from rich.console import Console
 from rich.table import Table
 
-from reshelf import __version__
-from reshelf.ai.resolver import AIError, ClaudeCLIResolver
 from reshelf.config import default_config, load_config, save_config
-from reshelf.matching.scorer import (
-    LocalBook,
-    band,
-    confidence_from_score,
-    same_work,
-    score_candidate,
-)
 from reshelf.calibre.export import books_to_export, export
-from reshelf.planner.committer import apply_plan, rollback_journal
-from reshelf.planner.planner import generate_plan
-from reshelf.providers.cache import FileCache
-from reshelf.providers.douban import DoubanProvider
-from reshelf.providers.openlibrary import OpenLibraryProvider
 from reshelf.reports.report import build_report
 from reshelf.db.database import Database
-from reshelf.extractors.base import ExtractionError
-from reshelf.extractors.epub import extract_epub
-from reshelf.extractors.mobi import extract_mobi
-from reshelf.extractors.pdf import extract_pdf
-from reshelf.metadata.isbn import find_isbns
-from reshelf.metadata.normalization import (
-    search_author,
-    short_title,
-    title_from_filename,
-)
-from reshelf.scanner.hashing import sha256_file
-from reshelf.scanner.scanner import iter_files
+from reshelf import pipeline
+from reshelf.store.sidecar import SidecarStore
 
 app = typer.Typer(no_args_is_help=True)
 
 ROOT_OPTION = typer.Option(Path("."), "--root", help="Library root (with config.yaml)")
 
+
+def _bar(label: str):
+    """Progress callback that prints to stderr; the job runner uses its own."""
+    console = Console(stderr=True)
+
+    def report(done: int, total: int | None, message: str) -> None:
+        suffix = f"/{total}" if total else ""
+        console.print(f"{label} {done}{suffix}: {message}", end="\r", highlight=False)
+
+    return report
+
+
 SUBDIRS = [
     "incoming", "library", "quarantine", "duplicates", "covers",
-    "cache/openlibrary", "cache/douban", "reports", "db",
+    "cache/openlibrary", "cache/douban", "reports", "db", "metadata", "derived",
 ]
 
 
@@ -76,31 +62,13 @@ def scan(
     """Discover ebook files and record them incrementally."""
     cfg = load_config(root)
     target = path or cfg.library.incoming
-    seen = added = changed = dups = 0
     with Database(cfg.database.path) as db:
-        run_id = db.start_scan_run(str(target))
-        for fi in iter_files(Path(target), cfg.scan.formats, cfg.scan.recursive):
-            seen += 1
-            fid, state = db.upsert_file(fi.path, fi.size, fi.mtime, fi.extension)
-            if state == "unchanged":
-                continue
-            added += state == "new"
-            changed += state == "changed"
-            if db.set_hash(fid, sha256_file(Path(fi.path))):
-                dups += 1
-            db.conn.commit()
-        db.finish_scan_run(run_id, seen, added, changed)
-        db.conn.commit()
-    typer.echo(f"seen={seen} added={added} changed={changed} duplicates={dups}")
-
-
-_EXTRACTORS = {
-    "epub": extract_epub,
-    "pdf": extract_pdf,
-    "mobi": extract_mobi,
-    "azw": extract_mobi,
-    "azw3": extract_mobi,
-}
+        db.init_schema()
+        r = pipeline.scan(cfg, db, SidecarStore(cfg), Path(target), _bar("Scanning"))
+    typer.echo(
+        f"seen={r['seen']} added={r['added']} changed={r['changed']}"
+        f" duplicates={r['duplicates']}"
+    )
 
 
 @app.command()
@@ -110,145 +78,10 @@ def extract(
 ) -> None:
     """Extract embedded metadata from scanned files."""
     cfg = load_config(root)
-    statuses = ["SCANNED"] + (["ERROR", "IDENTIFIED"] if force else [])
-    done = errors = 0
     with Database(cfg.database.path) as db:
-        rows = [r for s in statuses for r in db.files_with_status(s)]
-        for row in rows:
-            extractor = _EXTRACTORS.get(row["format"])
-            path = Path(row["path"])
-            try:
-                if extractor is None:
-                    raise ExtractionError(f"unsupported format {row['format']}")
-                meta = extractor(path)
-            except ExtractionError:
-                db.set_status(row["id"], "ERROR")
-                errors += 1
-                continue
-            isbns = meta.isbns or find_isbns(path.name)
-            db.set_raw_metadata(
-                row["id"],
-                title=meta.title,
-                author="; ".join(meta.authors) or None,
-                isbn=isbns[0] if isbns else None,
-                language=meta.language,
-            )
-            db.set_status(row["id"], "IDENTIFIED")
-            done += 1
-        db.conn.commit()
-    typer.echo(f"extracted={done} errors={errors}")
-
-
-_BAND_TO_STATUS = {
-    "AUTO_ACCEPT": "MATCHED",
-    "HIGH_CONFIDENCE": "MATCHED",
-    "REVIEW_RECOMMENDED": "REVIEW",
-    "AI_RESOLUTION": "REVIEW",
-    "UNRESOLVED": "UNRESOLVED",
-}
-
-
-_HAS_CJK = re.compile(r"[一-鿿]")
-
-
-def _order_providers(providers: list, local: LocalBook) -> list:
-    """Chinese-looking books query Douban first; everything else Open Library."""
-    text = (local.title or "") + " ".join(local.authors)
-    if local.language == "zh" or _HAS_CJK.search(text):
-        return sorted(providers, key=lambda p: p.name != "douban")
-    return providers
-
-
-def _gather_candidates(providers: list, local: LocalBook) -> list:
-    for provider in providers:
-        found = []
-        for isbn in local.isbn13s:
-            found += provider.lookup_isbn(isbn)
-        if found:
-            return found
-    for provider in providers:
-        if not local.title:
-            break
-        title_q = short_title(local.title)
-        author_q = search_author(local.authors[0]) if local.authors else None
-        found = provider.search(title_q, author_q)
-        if not found and author_q:
-            found = provider.search(title_q)
-        if found:
-            return found
-    return []
-
-
-def _local_book(row) -> LocalBook:
-    return LocalBook(
-        title=row["title_raw"] or title_from_filename(Path(row["path"]).stem),
-        authors=[a.strip() for a in (row["author_raw"] or "").split(";") if a.strip()],
-        isbn13s=[row["isbn_raw"]] if row["isbn_raw"] else [],
-        language=row["language_raw"],
-    )
-
-
-def _build_providers(cfg, client) -> list:
-    providers = []
-    if cfg.providers.openlibrary.enabled:
-        providers.append(
-            OpenLibraryProvider(
-                client=client,
-                cache=FileCache(
-                    cfg.library.root / "cache" / "openlibrary", cfg.cache.ttl_days
-                ),
-            )
-        )
-    if cfg.providers.douban.enabled:
-        providers.append(
-            DoubanProvider(
-                client=client,
-                cache=FileCache(
-                    cfg.library.root / "cache" / "douban", cfg.cache.ttl_days
-                ),
-                apikey=cfg.providers.douban.apikey,
-            )
-        )
-    return providers
-
-
-def _match_file(db, providers, mcfg, row) -> str:
-    local = _local_book(row)
-    candidates = _gather_candidates(_order_providers(providers, local), local)
-    for cand in candidates:
-        cand.score, cand.evidence = score_candidate(local, cand)
-        cand.confidence = confidence_from_score(cand.score, cand.evidence)
-    candidates.sort(key=lambda c: c.score, reverse=True)
-    if not candidates:
-        db.set_status(row["id"], "UNRESOLVED")
-        return "UNRESOLVED"
-    best = candidates[0]
-    b = band(best.confidence, mcfg)
-    if (
-        len(candidates) > 1
-        and best.score - candidates[1].score < 10
-        and b in ("AUTO_ACCEPT", "HIGH_CONFIDENCE")
-        and not same_work(best, candidates[1])
-    ):
-        b = "REVIEW_RECOMMENDED"
-        best.evidence.append("ambiguous:tie")
-    for provider in providers:
-        if provider.name == best.provider:
-            best = provider.enrich(best)
-            break
-    edition_id = db.save_candidate(best)
-    db.record_match(
-        row["id"], edition_id, best.score, best.confidence,
-        "deterministic", best.evidence, b,
-    )
-    status = _BAND_TO_STATUS[b]
-    db.set_file_match(
-        row["id"],
-        edition_id if status == "MATCHED" else None,
-        best.confidence,
-        status,
-    )
-    return status
+        db.init_schema()
+        r = pipeline.extract(cfg, db, SidecarStore(cfg), force, _bar("Extracting"))
+    typer.echo(f"extracted={r['extracted']} errors={r['errors']}")
 
 
 @app.command()
@@ -258,35 +91,14 @@ def match(
 ) -> None:
     """Match identified files against Open Library."""
     cfg = load_config(root)
-    client = None if offline else httpx.Client(
-        headers={"User-Agent": f"reshelf/{__version__}"}
-    )
-    providers = _build_providers(cfg, client)
-    if not providers:
-        typer.echo("all providers disabled in config", err=True)
-        raise typer.Exit(1)
-    counts: dict[str, int] = {}
-    try:
-        with Database(cfg.database.path) as db:
-            rows = db.files_with_status("IDENTIFIED")
-            total = len(rows)
-            for i, row in enumerate(rows, 1):
-                try:
-                    status = _match_file(db, providers, cfg.matching, row)
-                except httpx.HTTPError as e:
-                    # leave the file IDENTIFIED so a later run retries it
-                    status = "NETWORK_ERROR"
-                    typer.echo(f"network error on {row['path']}: {e}", err=True)
-                counts[status] = counts.get(status, 0) + 1
-                db.conn.commit()
-                if i % 25 == 0 or i == total:
-                    typer.echo(
-                        f"[{i}/{total}] "
-                        + " ".join(f"{k}={v}" for k, v in sorted(counts.items()))
-                    )
-    finally:
-        if client is not None:
-            client.close()
+    with Database(cfg.database.path) as db:
+        try:
+            counts = pipeline.match(
+                cfg, db, SidecarStore(cfg), offline, _bar("Matching")
+            )
+        except RuntimeError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(1)
     typer.echo(" ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "nothing to match")
 
 
@@ -300,82 +112,17 @@ def resolve(
 ) -> None:
     """Ask Claude to judge ambiguous matches (review queue) using cached candidates."""
     cfg = load_config(root)
-    if not cfg.ai.enabled:
-        typer.echo("ai disabled in config", err=True)
-        raise typer.Exit(1)
-    resolver = ClaudeCLIResolver(model=cfg.ai.model, timeout=cfg.ai.timeout_seconds)
-    providers = _build_providers(cfg, client=None)  # cache-only candidate regathering
-    statuses = ["REVIEW"] + (["UNRESOLVED"] if include_unresolved else [])
-    counts: dict[str, int] = {}
-
-    def bump(key: str) -> None:
-        counts[key] = counts.get(key, 0) + 1
-
     with Database(cfg.database.path) as db:
-        rows = [r for s in statuses for r in db.files_with_status(s)]
-        if limit:
-            rows = rows[:limit]
-        total = len(rows)
-        for i, row in enumerate(rows, 1):
-            local = _local_book(row)
-            candidates = _gather_candidates(_order_providers(providers, local), local)
-            if not candidates:
-                bump("NO_CANDIDATES")
-                continue
-            for cand in candidates:
-                cand.score, cand.evidence = score_candidate(local, cand)
-            try:
-                decision = resolver.resolve(
-                    {
-                        "filename": Path(row["path"]).name,
-                        "title": local.title,
-                        "authors": local.authors,
-                        "isbn13": local.isbn13s[0] if local.isbn13s else None,
-                        "language": local.language,
-                    },
-                    candidates,
-                )
-            except AIError as e:
-                bump("AI_ERROR")
-                typer.echo(f"AI error on {row['path']}: {e}", err=True)
-                continue
-            if decision.decision is None:
-                db.set_status(row["id"], "UNRESOLVED")
-                bump("UNRESOLVED")
-            else:
-                best = candidates[decision.decision]
-                conf = min(max(decision.confidence, 0.0), 0.97)  # never AUTO_ACCEPT
-                b = band(conf, cfg.matching)
-                if b == "AUTO_ACCEPT":
-                    b = "HIGH_CONFIDENCE"
-                evidence = (
-                    best.evidence
-                    + [f"ai:{r}" for r in decision.reasons]
-                    + [f"ai_uncertain:{u}" for u in decision.uncertainties]
-                )
-                for provider in providers:
-                    if provider.name == best.provider:
-                        best = provider.enrich(best)
-                        break
-                edition_id = db.save_candidate(best)
-                db.record_match(
-                    row["id"], edition_id, best.score, conf, "ai", evidence, b
-                )
-                status = _BAND_TO_STATUS[b]
-                db.set_file_match(
-                    row["id"],
-                    edition_id if status == "MATCHED" else None,
-                    conf,
-                    status,
-                )
-                bump(status)
-            db.conn.commit()
-            if i % 10 == 0 or i == total:
-                typer.echo(
-                    f"[{i}/{total}] "
-                    + " ".join(f"{k}={v}" for k, v in sorted(counts.items()))
-                )
-    typer.echo(" ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "nothing to resolve")
+        try:
+            result = pipeline.resolve(
+                cfg, db, SidecarStore(cfg), limit, include_unresolved, _bar("Resolving")
+            )
+        except pipeline.AIDisabledError:
+            typer.echo("ai.provider is not set in config.yaml", err=True)
+            raise typer.Exit(1)
+    typer.echo(
+        " ".join(f"{k}={v}" for k, v in sorted(result.items())) or "nothing to resolve"
+    )
 
 
 @app.command()
@@ -403,7 +150,7 @@ def plan(root: Path = ROOT_OPTION) -> None:
     """Generate a reviewable dry-run plan (writes reports/plan-*.json only)."""
     cfg = load_config(root)
     with Database(cfg.database.path) as db:
-        out = generate_plan(db, cfg.library.root / "reports")
+        out = pipeline.plan(cfg, db, SidecarStore(cfg))
         n = len(_json.loads(out.read_text())["actions"])
     typer.echo(f"plan written: {out} ({n} actions). No files were modified.")
 
@@ -432,19 +179,16 @@ def commit(
     if plan_path is None:
         typer.echo("no plan found; run `reshelf plan` first", err=True)
         raise typer.Exit(1)
-    plan_data = _json.loads(Path(plan_path).read_text())
     with Database(cfg.database.path) as db:
-        journal = apply_plan(
-            plan_data,
+        journal = pipeline.commit(
+            cfg,
             db,
-            library_dir=cfg.library.root / "library",
-            quarantine_dir=cfg.library.quarantine,
-            duplicates_dir=cfg.library.root / "duplicates",
-            reports_dir=reports_dir,
+            SidecarStore(cfg),
+            plan_path,
+            _bar("Committing"),
             dry_run=dry_run,
             do_quarantine=quarantine,
             do_duplicates=duplicates,
-            convert_kindle=cfg.library.convert_to_epub,
         )
     verb = "would perform" if dry_run else "performed"
     typer.echo(
@@ -460,13 +204,14 @@ def rollback(
 ) -> None:
     """Undo a commit using its journal (removes copies, restores moves)."""
     cfg = load_config(root)
-    journal_path = cfg.library.root / "reports" / f"commit-{commit_id}.json"
-    if not journal_path.exists():
-        typer.echo(f"no journal at {journal_path}", err=True)
-        raise typer.Exit(1)
-    journal = _json.loads(journal_path.read_text())
     with Database(cfg.database.path) as db:
-        result = rollback_journal(journal, db, cfg.library.root / "library")
+        try:
+            result = pipeline.rollback(
+                cfg, db, SidecarStore(cfg), commit_id, _bar("Rolling back")
+            )
+        except FileNotFoundError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(1)
     typer.echo(f"reverted={result['reverted']} skipped={result['skipped']}")
 
 
@@ -514,5 +259,72 @@ def calibre_export(
         typer.echo(f"  FAILED {Path(f['path']).name}: {f['error'][:120]}", err=True)
 
 
+@app.command("migrate-json")
+def migrate_json_cmd(root: Path = ROOT_OPTION) -> None:
+    """One shot: write a JSON sidecar for every hashed file in the database."""
+    from reshelf.store.bootstrap import migrate_json
+    from reshelf.store.sidecar import SidecarStore
+
+    cfg = load_config(root)
+    with Database(cfg.database.path) as db:
+        db.init_schema()
+        n = migrate_json(db, SidecarStore(cfg), lambda *a: None)
+    typer.echo(f"sidecars={n}")
+
+
+@app.command()
+def serve(
+    root: Path = ROOT_OPTION,
+    host: Optional[str] = typer.Option(None, "--host"),
+    port: Optional[int] = typer.Option(None, "--port"),
+) -> None:
+    """Run the web app."""
+    import uvicorn
+
+    from reshelf.db.database import LockError
+    from reshelf.web.app import create_app
+
+    cfg = load_config(root)
+    try:
+        fastapi_app = create_app(root)
+    except LockError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1)
+    # create_app already took db.lock. If uvicorn never gets as far as
+    # running the lifespan - a port already in use is the everyday case -
+    # nothing else would release it, and the next `reshelf <anything>`
+    # refuses to start against a lock file no process holds. Database.close
+    # is idempotent, so the normal shutdown path closing it first is fine.
+    try:
+        uvicorn.run(
+            fastapi_app,
+            host=host or cfg.web.host,
+            port=port or cfg.web.port,
+        )
+    finally:
+        fastapi_app.state.reshelf.db.close()
+
+
+@app.command()
+def reindex(root: Path = ROOT_OPTION) -> None:
+    """Rebuild the derived search index from the sidecars."""
+    from reshelf.store.bootstrap import reindex as _reindex
+    from reshelf.store.sidecar import SidecarStore
+
+    cfg = load_config(root)
+    with Database(cfg.database.path) as db:
+        db.init_schema()
+        n = _reindex(db, SidecarStore(cfg), lambda *a: None)
+    typer.echo(f"indexed={n}")
+
+
 def main() -> None:
-    app()
+    """Entry point. One `serve` holds db.lock all day, so every other
+    command meeting it is routine - report it instead of a traceback."""
+    from reshelf.db.database import LockError
+
+    try:
+        app()
+    except LockError as e:
+        typer.echo(str(e), err=True)
+        raise SystemExit(1) from None

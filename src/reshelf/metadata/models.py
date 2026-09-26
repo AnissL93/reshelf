@@ -30,3 +30,4 @@ class Candidate(BaseModel):
     score: float = 0
     confidence: float = 0
     evidence: list[str] = []
+    edition_id: int | None = None

@@ -5,9 +5,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from reshelf.calibre.convert import KINDLE_FORMATS, ConversionError, convert_to_epub
 from reshelf.db.database import Database
 from reshelf.scanner.hashing import sha256_file
+from reshelf.store import index
+from reshelf.store.models import Book
+from reshelf.store.sidecar import SidecarStore
 
 
 def _safe(component: str) -> str:
@@ -39,7 +41,7 @@ def verify_preconditions(action: dict) -> str | None:
     return None
 
 
-def _unique_dest(dest: Path, sha256: str | None) -> tuple[Path, bool]:
+def unique_dest(dest: Path, sha256: str | None) -> tuple[Path, bool]:
     """Resolve collisions. Returns (dest, already_done)."""
     if not dest.exists():
         return dest, False
@@ -59,7 +61,8 @@ def apply_plan(
     dry_run: bool = False,
     do_quarantine: bool = False,
     do_duplicates: bool = False,
-    convert_kindle: bool = True,
+    mode: str = "copy",
+    layout: str = "hash",
 ) -> dict:
     now = datetime.now(timezone.utc)
     commit_id = now.strftime("%Y%m%d-%H%M%S") + "-" + uuid4().hex[:8]
@@ -71,7 +74,7 @@ def apply_plan(
 
     def move_into(action: dict, target_dir: Path) -> None:
         src = Path(action["file"])
-        dest, already = _unique_dest(
+        dest, already = unique_dest(
             Path(target_dir) / src.name, action["preconditions"].get("sha256")
         )
         if already:
@@ -103,29 +106,30 @@ def apply_plan(
                 if reason:
                     skip(action, reason)
                     continue
-                needs_convert = (
-                    convert_kindle
-                    and Path(action["file"]).suffix.lower() in KINDLE_FORMATS
+                dest, already = unique_dest(
+                    dest_for(action, library_dir),
+                    action["preconditions"].get("sha256"),
                 )
-                if needs_convert:
-                    dest = dest_for(action, library_dir).with_suffix(".epub")
-                    already = dest.exists()  # content hashes can't be compared
-                else:
-                    dest, already = _unique_dest(
-                        dest_for(action, library_dir),
-                        action["preconditions"].get("sha256"),
-                    )
                 if not dry_run:
                     if not already:
-                        if needs_convert:
-                            try:
-                                convert_to_epub(Path(action["file"]), dest)
-                            except ConversionError as e:
-                                skip(action, f"conversion failed: {e}")
-                                continue
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        if mode == "move":
+                            shutil.move(action["file"], dest)
                         else:
-                            dest.parent.mkdir(parents=True, exist_ok=True)
                             shutil.copy2(action["file"], dest)
+                    if mode == "move" and layout == "hash":
+                        # Same bookkeeping move_into does: in copy mode the
+                        # source is still there and files.path stays right;
+                        # in move mode it is gone and a row naming it is
+                        # false. Only under layout=hash, though - under
+                        # sidecar/library files.path *is* the sidecar
+                        # locator, and the sidecar deliberately does not
+                        # follow the bytes, so repointing it severs the
+                        # link and 404s the book.
+                        db.conn.execute(
+                            "UPDATE files SET path=? WHERE path=?",
+                            (str(dest), action["file"]),
+                        )
                     db.set_status(row["id"], "COMMITTED")
                     db.conn.commit()
                 done.append(
@@ -133,7 +137,7 @@ def apply_plan(
                         "action": "import",
                         "src": action["file"],
                         "dest": str(dest),
-                        "converted": needs_convert,
+                        "moved": mode == "move",
                     }
                 )
             elif kind == "quarantine":
@@ -174,22 +178,93 @@ def apply_plan(
     return journal
 
 
-def rollback_journal(journal: dict, db: Database, library_dir: Path) -> dict:
+def _prune_empty(parent: Path, library_dir: Path) -> None:
+    while parent != Path(library_dir) and parent.exists() and not any(parent.iterdir()):
+        parent.rmdir()
+        parent = parent.parent
+
+
+def _restore_sidecar(db: Database, store: SidecarStore, entry: dict) -> None:
+    """Point the sidecar's files[] back at the path the bytes returned to.
+
+    Rollback that only moves files leaves `book.files[]` naming a
+    destination that no longer exists: `/books/{sha}/file` 404s and
+    `reindex` cannot repair it, because reindex rebuilds *from* the
+    sidecars. This is the inverse of pipeline._record_committed_path (and
+    of writeback.rename_library_copy's repoint).
+
+    Renaming the entry in place rather than dropping and re-adding it
+    keeps `role`/`sha256`/`size`; the dedupe afterwards collapses the
+    copy-mode case, where files[] holds both src and dest. Idempotent: a
+    second run finds no `dest` entry and changes nothing. Nothing outside
+    files[] is touched, so another resolver's metadata is left alone.
+
+    `sha256`/`locator` come off the journal entry when it carries them
+    (writeback's tier-2 rename, whose sidecar is keyed on neither of these
+    paths); otherwise the DB knows, and the locator is the original src.
+    """
+    src, dest = entry["src"], entry["dest"]
+    sha256, locator = entry.get("sha256"), entry.get("locator") or src
+    if not sha256:
+        row = db.conn.execute(
+            "SELECT sha256 FROM files WHERE path IN (?,?)", (src, dest)
+        ).fetchone()
+        if row is None or not row["sha256"]:
+            return
+        sha256 = row["sha256"]
+
+    def mutate(book: Book) -> None:
+        kept: list = []
+        for f in book.files:
+            if f.path == dest:
+                f.path = src
+            if not any(k.path == f.path for k in kept):
+                kept.append(f)
+        book.files = kept
+
+    try:
+        book = store.update(sha256, mutate, locator)
+    except (KeyError, OSError):
+        return  # no sidecar to repair (or it is unreadable); the bytes still moved
+    index.sync(db.conn, book)
+
+
+def rollback_journal(
+    journal: dict, db: Database, library_dir: Path, store: SidecarStore
+) -> dict:
     reverted: list[dict] = []
     skipped: list[dict] = []
     for entry in reversed(journal.get("actions", [])):
         src, dest = Path(entry["src"]), Path(entry["dest"])
         if entry["action"] == "import":
-            if dest.exists():
+            if entry.get("moved"):
+                if not dest.exists() or src.exists():
+                    skipped.append({**entry, "reason": "cannot restore"})
+                    continue
+                src.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(dest), src)
+                _prune_empty(dest.parent, library_dir)
+                # apply_plan repointed files.path at dest when it moved
+                # the file under layout=hash; put it back before the status
+                # update below looks the row up by src. Under the other
+                # layouts the row still names src and there is nothing to
+                # put back - and a row at dest is then somebody else's
+                # (a scan of library/), which must not be renamed onto an
+                # existing src: path is UNIQUE.
+                if not db.conn.execute(
+                    "SELECT 1 FROM files WHERE path=?", (str(src),)
+                ).fetchone():
+                    db.conn.execute(
+                        "UPDATE files SET path=? WHERE path=?", (str(src), str(dest))
+                    )
+            elif dest.exists():
                 dest.unlink()
-                parent = dest.parent
-                while parent != Path(library_dir) and not any(parent.iterdir()):
-                    parent.rmdir()
-                    parent = parent.parent
+                _prune_empty(dest.parent, library_dir)
             db.conn.execute(
                 "UPDATE files SET status='MATCHED' WHERE path=? AND status='COMMITTED'",
                 (str(src),),
             )
+            _restore_sidecar(db, store, entry)
             reverted.append(entry)
         else:  # quarantine / mark_duplicate were moves
             if dest.exists() and not src.exists():
@@ -198,6 +273,7 @@ def rollback_journal(journal: dict, db: Database, library_dir: Path) -> dict:
                 db.conn.execute(
                     "UPDATE files SET path=? WHERE path=?", (str(src), str(dest))
                 )
+                _restore_sidecar(db, store, entry)
                 reverted.append(entry)
             else:
                 skipped.append({**entry, "reason": "cannot restore"})

@@ -142,6 +142,11 @@ def test_resolve_applies_ai_decision(tmp_path, monkeypatch):
     runner.invoke(app, ["match", "--root", str(root), "--offline"])
 
     cfg = load_config(root)
+    # Enable AI for this test (we'll mock the resolver)
+    cfg.ai.provider = "claude-cli"
+    from reshelf.config import save_config
+    save_config(cfg, root)
+
     with Database(cfg.database.path) as db:
         fid = db.conn.execute("SELECT id FROM files").fetchone()["id"]
         # force into the review queue so resolve picks it up
@@ -188,6 +193,11 @@ def test_resolve_null_decision_marks_unresolved(tmp_path, monkeypatch):
     )
     runner.invoke(app, ["match", "--root", str(root), "--offline"])
     cfg = load_config(root)
+    # Enable AI for this test (we'll mock the resolver)
+    cfg.ai.provider = "claude-cli"
+    from reshelf.config import save_config
+    save_config(cfg, root)
+
     with Database(cfg.database.path) as db:
         fid = db.conn.execute("SELECT id FROM files").fetchone()["id"]
         db.set_file_match(fid, None, 0.80, "REVIEW")
@@ -205,3 +215,60 @@ def test_resolve_null_decision_marks_unresolved(tmp_path, monkeypatch):
     with Database(cfg.database.path) as db:
         f = db.conn.execute("SELECT * FROM files WHERE id=?", (fid,)).fetchone()
         assert f["status"] == "UNRESOLVED"
+
+
+def test_a_held_lock_is_reported_not_traced_back(tmp_path, capsys, monkeypatch):
+    """`serve` holds db.lock all day, so every other command meeting it is
+    routine. Only `serve` caught LockError; the other ten dumped a
+    traceback at the user."""
+    import sys
+
+    import pytest
+
+    from reshelf.cli import main
+    from reshelf.db.database import Database
+
+    assert runner.invoke(app, ["init", str(tmp_path)]).exit_code == 0
+    holder = Database(tmp_path / "db" / "books.sqlite3")
+    try:
+        monkeypatch.setattr(sys, "argv", ["reshelf", "report", "--root", str(tmp_path)])
+        with pytest.raises(SystemExit) as exc:
+            main()
+        assert exc.value.code == 1
+        assert "another reshelf instance holds" in capsys.readouterr().err
+    finally:
+        holder.close()
+
+
+def test_serve_releases_the_lock_when_uvicorn_cannot_bind(tmp_path, monkeypatch):
+    """build_state takes db.lock inside create_app, before uvicorn.run. A
+    port-bind failure left a lock file no process holds, and the next
+    command refused to start."""
+    import pytest
+    import uvicorn
+
+    from reshelf.cli import serve
+
+    assert runner.invoke(app, ["init", str(tmp_path)]).exit_code == 0
+    lock = tmp_path / "db" / ".lock"
+
+    def boom(*a, **k):
+        assert lock.exists()  # the lock really was taken
+        raise OSError("address already in use")
+
+    monkeypatch.setattr(uvicorn, "run", boom)
+    with pytest.raises(OSError):
+        serve(root=tmp_path, host=None, port=None)
+
+    assert not lock.exists()
+    # ...and a following command still starts
+    assert runner.invoke(app, ["report", "--root", str(tmp_path)]).exit_code == 0
+
+
+def test_db_close_is_idempotent(tmp_path):
+    from reshelf.db.database import Database
+
+    db = Database(tmp_path / "books.sqlite3")
+    db.close()
+    db.close()
+    assert not (tmp_path / ".lock").exists()

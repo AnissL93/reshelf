@@ -1,9 +1,11 @@
 import json
 import os
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
+from reshelf.db.migrations import migrate
 from reshelf.metadata.models import Candidate
 
 SCHEMA = """
@@ -137,18 +139,32 @@ class Database:
                 f"another reshelf instance holds {self.lock_path} "
                 "(delete it if that process crashed)"
             ) from None
-        self.conn = sqlite3.connect(self.path, timeout=30)
+        self.conn = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
+        # One process holds the lock file, but FastAPI request threads and the
+        # job worker share this connection. SQLite serialises individual
+        # statements on its own; this lock only keeps a *sequence* of
+        # statements (e.g. read-modify-write, or a multi-table update) from
+        # interleaving with another thread's sequence. Callers doing more
+        # than one statement that must be seen atomically must hold it.
+        self.lock = threading.RLock()
 
     def init_schema(self) -> None:
         self.conn.executescript(SCHEMA)
+        migrate(self.conn)
         self.conn.commit()
 
     def close(self) -> None:
+        """Idempotent: `serve` closes in a finally that may run after the
+        ASGI lifespan has already closed, and a double os.close() on a
+        recycled fd is worse than a no-op."""
+        if self._lock_fd is None:
+            return
         self.conn.close()
         os.close(self._lock_fd)
+        self._lock_fd = None
         self.lock_path.unlink(missing_ok=True)
 
     def __enter__(self) -> "Database":
@@ -313,3 +329,16 @@ class Database:
             " updated_at=? WHERE id=?",
             (edition_id, confidence, status, _now(), file_id),
         )
+
+    def edition_metadata(self, edition_id: int) -> dict | None:
+        """Fetch edition metadata including all co-authors as aggregated list."""
+        row = self.conn.execute(
+            "SELECT e.id, w.canonical_title AS title, e.isbn13, e.isbn10,"
+            " e.publisher, e.publication_date, e.language,"
+            " (SELECT group_concat(a.canonical_name, '; ')"
+            "    FROM work_authors wa JOIN authors a ON a.id = wa.author_id"
+            "   WHERE wa.work_id = w.id) AS authors"
+            " FROM editions e JOIN works w ON w.id = e.work_id WHERE e.id = ?",
+            (edition_id,),
+        ).fetchone()
+        return dict(row) if row else None
