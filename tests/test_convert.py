@@ -1,5 +1,7 @@
 import shutil
+import tempfile
 import zipfile
+from pathlib import Path
 
 import pytest
 
@@ -75,6 +77,17 @@ def test_a_corrupt_mobi_raises_conversion_error_not_a_crash(tmp_path):
     src.write_bytes(b"definitely not a mobi")
     with pytest.raises(ConversionError):
         convert(src, tmp_path / "out.epub")
+
+
+def test_a_failed_mobi_unpack_does_not_leak_its_temp_dir(tmp_path):
+    tmp_root = Path(tempfile.gettempdir())
+    before = set(tmp_root.glob("mobiex*"))
+    src = tmp_path / "book.mobi"
+    src.write_bytes(b"definitely not a mobi")
+    with pytest.raises(ConversionError):
+        convert(src, tmp_path / "out.epub")
+    leaked = set(tmp_root.glob("mobiex*")) - before
+    assert not leaked, f"leaked temp dirs: {leaked}"
 
 
 @pytest.mark.skipif(shutil.which("ddjvu") is None, reason="djvulibre not installed")

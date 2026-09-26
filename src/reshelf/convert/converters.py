@@ -75,9 +75,17 @@ def _mobi_to_epub(src: Path, dest: Path) -> Path:
         import mobi
     except ImportError as e:
         raise ConversionError("the `mobi` package is not installed") from e
+    # mobi.extract() mkdtemp()s *before* unpacking, so a mid-unpack failure
+    # leaks that directory - it never reaches us as `tempdir`. Snapshot and
+    # sweep any that appear during a failed call; belt-and-braces alongside
+    # the `finally` below, which only covers the success path.
+    tmp_root = Path(tempfile.gettempdir())
+    before = set(tmp_root.glob("mobiex*"))
     try:
         tempdir, produced = mobi.extract(str(src))
     except Exception as e:  # KindleUnpack raises a zoo of exceptions
+        for leaked in set(tmp_root.glob("mobiex*")) - before:
+            shutil.rmtree(leaked, ignore_errors=True)
         raise ConversionError(f"could not unpack {src.name}: {e}") from e
     try:
         produced = Path(produced)
