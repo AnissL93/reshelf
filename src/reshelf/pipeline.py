@@ -16,6 +16,7 @@ import httpx
 from reshelf import __version__
 from reshelf.ai.resolver import AIError, build_resolver
 from reshelf.config import Config
+from reshelf.covers import ensure_cover
 from reshelf.db.database import Database
 from reshelf.extractors.base import ExtractionError
 from reshelf.extractors.epub import extract_epub
@@ -160,6 +161,11 @@ def extract(
         )
         db.set_status(row["id"], "IDENTIFIED")
         _write_extracted_sidecar(db, store, row, meta, isbns)
+        if row["sha256"]:
+            try:
+                ensure_cover(Path(cfg.library.root) / "covers", row["sha256"], path)
+            except Exception:
+                pass  # a bad cover must never abort metadata extraction
         done += 1
     db.conn.commit()
     return {"extracted": done, "errors": errors}
