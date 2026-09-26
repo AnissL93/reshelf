@@ -21,6 +21,14 @@ logger = logging.getLogger(__name__)
 
 TERMINAL = ("done", "failed", "cancelled", "interrupted")
 
+# How long events() waits on a publish before re-checking the job row
+# itself. Keeps a subscriber from blocking forever if a publish is ever
+# lost, and keeps `_subscribers` from outliving its job. The web layer's
+# own idle-poll (reshelf.web.api.jobs.POLL_TIMEOUT) is a slower backstop
+# on top of this, not a replacement for it - this value is kept below that
+# one so this self-heal fires first in the normal case.
+EVENTS_POLL_TIMEOUT = 1.0
+
 
 class UnknownCommand(ValueError):
     pass
@@ -167,7 +175,21 @@ class JobRunner:
                 if snapshot["status"] in TERMINAL:
                     return
             while True:
-                event = q.get()
+                try:
+                    event = q.get(timeout=EVENTS_POLL_TIMEOUT)
+                except queue.Empty:
+                    # Nothing published in time. The terminal notify can be
+                    # silently swallowed (see _finish's except), which would
+                    # otherwise leave this call blocked here forever and
+                    # this subscriber registered forever. Re-check the row
+                    # directly: if the job actually finished, self-heal
+                    # right here at the source, so the `finally` below runs
+                    # and this generator doesn't outlive its job.
+                    snapshot = self.get(job_id)
+                    if snapshot is not None and snapshot["status"] in TERMINAL:
+                        yield snapshot
+                        return
+                    continue
                 yield event
                 if event["status"] in TERMINAL:
                     return

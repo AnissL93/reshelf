@@ -17,18 +17,23 @@ router = APIRouter(tags=["jobs"])
 NEEDS_CONFIRMATION = {"commit", "rollback"}
 
 # How long to wait for the next event before polling the job row directly.
-# JobRunner.events() blocks on queue.Queue.get() with no timeout, and the
-# terminal notify it depends on can be silently swallowed (see
-# JobRunner._finish). Re-checking the DB on every idle tick means a missed
-# notify still ends the stream - it just takes up to this long instead of
-# forever - and doubles as an SSE keepalive so proxies don't drop the
-# connection while a job is slow between progress ticks.
-POLL_TIMEOUT = 2.0
+# JobRunner.events() already self-heals a swallowed terminal publish on its
+# own (see EVENTS_POLL_TIMEOUT in reshelf.web.jobs) - this is a slower
+# backstop on top of that, in case something ever delays the generator
+# itself, and it doubles as an SSE keepalive so proxies don't drop an idle
+# connection.
+POLL_TIMEOUT = 3.0
 
 
 @router.post("/jobs", status_code=202)
 def create_job(payload: JobCreate, state: AppState = Depends(get_state)) -> dict:
-    if payload.command in NEEDS_CONFIRMATION and not payload.args.get("confirmed"):
+    # Strict identity, not truthiness: args comes straight from raw JSON with
+    # no coercion (JobCreate.args is dict[str, Any]), and a client that
+    # serializes a checkbox as "false" or "0" would otherwise sail through -
+    # every non-empty string is truthy in Python. commit/rollback move and
+    # delete the user's files, so only the literal boolean True may pass.
+    confirmed = payload.args.get("confirmed")
+    if payload.command in NEEDS_CONFIRMATION and confirmed is not True:
         raise HTTPException(
             409,
             f"{payload.command} needs an explicit confirmation:"
@@ -67,15 +72,15 @@ async def job_events(job_id: int, state: AppState = Depends(get_state)):
         raise HTTPException(404, "no such job")
 
     async def stream():
-        # events() is a synchronous, blocking generator (queue.Queue.get()
-        # with no timeout) - it must never run directly on the event loop,
-        # or one slow job freezes every other request. Pump it from a
-        # single dedicated daemon thread (not the loop's default executor:
-        # if the hazard below ever leaves that thread permanently blocked,
-        # asyncio's default-executor shutdown joins it and hangs the whole
-        # process at exit - a daemon thread doesn't). Only this thread ever
-        # calls next() on the generator, so there is never a concurrent
-        # call into it.
+        # events() is a synchronous generator (it waits on queue.Queue.get())
+        # - it must never run directly on the event loop, or one slow job
+        # freezes every other request. Pump it from a single dedicated
+        # daemon thread, not the loop's default executor: events() bounds
+        # its own wait (EVENTS_POLL_TIMEOUT) so it no longer blocks forever,
+        # but if it ever did, asyncio's default-executor shutdown joins a
+        # stuck worker and hangs the whole process at exit - a plain daemon
+        # thread doesn't. Only this thread ever calls next() on the
+        # generator, so there is never a concurrent call into it.
         iterator = state.runner.events(job_id)
         loop = asyncio.get_running_loop()
         out: asyncio.Queue = asyncio.Queue()
@@ -118,12 +123,12 @@ async def job_events(job_id: int, state: AppState = Depends(get_state)):
                     return
         finally:
             # Best effort: this is only safe when the pump thread is
-            # between next() calls, not mid-block inside one. If a client
-            # disconnects while the pump is still waiting on the next
-            # event, the generator is "already executing" in that thread
-            # and closing it here would raise - in that case it closes
-            # itself (and removes its subscriber entry) the next time it
-            # wakes, via the pump thread's own for-loop exiting normally.
+            # between next() calls, not mid-block inside one - in that
+            # instant the generator is "already executing" and closing it
+            # here would raise. Since events() now wakes on its own at
+            # least every EVENTS_POLL_TIMEOUT, that race window is bounded
+            # (not permanent): if we lose it, the generator closes itself
+            # and removes its subscriber entry the next time it wakes.
             with contextlib.suppress(ValueError):
                 iterator.close()
 

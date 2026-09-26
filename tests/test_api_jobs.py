@@ -18,6 +18,15 @@ def client(tmp_path):
         yield c
 
 
+# httpx's TestClient has no default read timeout, and iter_lines() can
+# block indefinitely on a stalled connection between lines already
+# received - the in-loop deadline checks below only run between lines that
+# already arrived, so they can't catch that case. This bounds it: a
+# regression that stops the stream entirely fails the test instead of
+# hanging the whole suite.
+STREAM_TIMEOUT = 20.0
+
+
 def wait(client, job_id, timeout=10):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -59,6 +68,18 @@ def test_commit_with_confirmation_is_accepted(client):
     assert r.status_code == 202
 
 
+@pytest.mark.parametrize("confirmed_value", ["false", "0", 0, None, "no", False])
+def test_confirmation_requires_the_literal_boolean_true(client, confirmed_value):
+    # args is raw JSON with no coercion (JobCreate.args: dict[str, Any]), and
+    # every non-empty string is truthy in Python - a client that serializes
+    # a checkbox as "false" must still be refused, not waved through.
+    r = client.post(
+        "/api/jobs",
+        json={"command": "commit", "args": {"confirmed": confirmed_value}},
+    )
+    assert r.status_code == 409
+
+
 def test_job_list_is_newest_first(client):
     first = client.post("/api/jobs", json={"command": "scan"}).json()["job_id"]
     wait(client, first)
@@ -81,7 +102,9 @@ def test_delete_cancels(client):
 
 def test_events_stream_ends_with_a_terminal_status(client):
     job_id = client.post("/api/jobs", json={"command": "scan"}).json()["job_id"]
-    with client.stream("GET", f"/api/jobs/{job_id}/events") as response:
+    with client.stream(
+        "GET", f"/api/jobs/{job_id}/events", timeout=STREAM_TIMEOUT
+    ) as response:
         assert response.headers["content-type"].startswith("text/event-stream")
         last = None
         deadline = time.monotonic() + 10
@@ -100,6 +123,22 @@ def test_events_stream_for_an_unknown_job_is_404(client):
     assert r.status_code == 404
 
 
+def _subscriber_count(state, job_id):
+    return len(state.runner._subscribers.get(job_id, []))
+
+
+def _wait_for_no_subscribers(state, job_id, timeout=5):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _subscriber_count(state, job_id) == 0:
+            return
+        time.sleep(0.05)
+    raise AssertionError(
+        f"subscriber for job {job_id} was never cleaned up: "
+        f"{state.runner._subscribers.get(job_id)}"
+    )
+
+
 def test_events_stream_self_heals_when_the_terminal_publish_is_swallowed(client):
     # Simulate the hazard: _finish() still writes the terminal status to the
     # DB, but the subscriber notify that normally follows never happens (the
@@ -113,7 +152,9 @@ def test_events_stream_self_heals_when_the_terminal_publish_is_swallowed(client)
     try:
         job_id = client.post("/api/jobs", json={"command": "scan"}).json()["job_id"]
         started = time.monotonic()
-        with client.stream("GET", f"/api/jobs/{job_id}/events") as response:
+        with client.stream(
+            "GET", f"/api/jobs/{job_id}/events", timeout=STREAM_TIMEOUT
+        ) as response:
             last = None
             deadline = time.monotonic() + 10
             for line in response.iter_lines():
@@ -129,8 +170,26 @@ def test_events_stream_self_heals_when_the_terminal_publish_is_swallowed(client)
         # bounded, not instant - proves the self-heal poll (not a fast path)
         # is what closed the stream
         assert elapsed < 10
+        # And the leak is actually gone, not just hidden from the client:
+        # events()'s own `finally` must have run and removed this
+        # subscriber's queue from JobRunner._subscribers.
+        _wait_for_no_subscribers(state, job_id)
     finally:
         state.runner._publish = original_publish
+
+
+def test_events_stream_disconnect_removes_subscriber(client):
+    # A client that stops reading (closes the connection, navigates away)
+    # must not leave its subscriber queue registered forever either.
+    state = client.app.state.reshelf
+    job_id = client.post("/api/jobs", json={"command": "scan"}).json()["job_id"]
+    with client.stream(
+        "GET", f"/api/jobs/{job_id}/events", timeout=STREAM_TIMEOUT
+    ) as response:
+        # Read only the first line, then fall out of the `with` block
+        # without draining the stream - that's the disconnect.
+        next(response.iter_lines())
+    _wait_for_no_subscribers(state, job_id)
 
 
 def test_finish_logs_when_the_terminal_publish_fails(client, caplog):
