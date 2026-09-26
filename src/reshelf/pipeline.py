@@ -16,6 +16,7 @@ import httpx
 from reshelf import __version__
 from reshelf.ai.resolver import AIError, build_resolver
 from reshelf.config import Config
+from reshelf.convert import converters
 from reshelf.covers import ensure_cover
 from reshelf.db.database import Database
 from reshelf.extractors.base import ExtractionError
@@ -640,3 +641,41 @@ def rollback(cfg: Config, db: Database, commit_id: str, progress: Progress) -> d
         raise FileNotFoundError(f"no journal at {journal_path}")
     journal = json.loads(journal_path.read_text())
     return rollback_journal(journal, db, Path(cfg.library.root) / "library")
+
+
+def convert_book(
+    cfg: Config, db: Database, store: SidecarStore, sha256: str, progress: Progress
+) -> str:
+    """Derive a readable EPUB (or PDF for DjVu). Additive - the original stays."""
+    row = _row_for(db, sha256)
+    book = store.load(sha256, row["path"]) or Book(sha256=sha256)
+    source = next((f for f in book.files if f.role == "original"), None)
+    source_path = Path(source.path if source else row["path"])
+    fmt = (source.format if source else row["format"]) or source_path.suffix.lstrip(".")
+
+    target = converters.target_format(fmt)
+    if target is None:
+        raise converters.ConversionError(f"nothing to convert: {fmt} is already usable")
+
+    progress(0, 1, f"converting {source_path.name}")
+    dest = Path(cfg.library.root) / cfg.convert.dir / f"{sha256}.{target}"
+    converters.convert(source_path, dest, timeout=cfg.convert.timeout)
+
+    derived = FileEntry(
+        path=str(dest),
+        format=target,
+        size=dest.stat().st_size,
+        mtime=int(dest.stat().st_mtime),
+        role="converted",
+        sha256=sha256_file(dest),
+    )
+
+    def mutate(b: Book) -> None:
+        b.files = [f for f in b.files if f.role != "converted"]
+        b.files.append(derived)
+
+    book = store.update(sha256, mutate, row["path"])
+    index.sync(db.conn, book)
+    ensure_cover(Path(cfg.library.root) / "covers", sha256, dest)
+    progress(1, 1, str(dest))
+    return str(dest)

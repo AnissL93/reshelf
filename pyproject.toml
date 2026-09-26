@@ -15,6 +15,10 @@ dependencies = [
     "rich>=13.0",
     "rapidfuzz>=3.0",
     "pymupdf>=1.24",
+    "mobi>=0.3",            # GPL-3.0; self-hosted only, see the spec
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sse-starlette>=2.1",
 ]
 
 [project.optional-dependencies]
