@@ -465,7 +465,7 @@ def resolve(
     resolver = build_resolver(cfg.ai)
     providers = build_providers(cfg, client=None)  # cache-only candidate regathering
     statuses = ["REVIEW"] + (["UNRESOLVED"] if include_unresolved else [])
-    resolved = skipped = errors = 0
+    resolved = skipped = errors = unresolved = 0
     rows = [r for s in statuses for r in db.files_with_status(s)]
     if limit:
         rows = rows[:limit]
@@ -494,11 +494,13 @@ def resolve(
                 },
                 candidates,
             )
-        except AIError:
+        except AIError as e:
             errors += 1
+            progress(i, total, f"AI error on {row['path']}: {e}")
             continue
         if decision.decision is None:
             db.set_status(row["id"], "UNRESOLVED")
+            unresolved += 1
         else:
             best = candidates[decision.decision]
             conf = min(max(decision.confidence, 0.0), 0.97)  # never AUTO_ACCEPT
@@ -522,9 +524,14 @@ def resolve(
             )
             if status == "MATCHED" and book is not None:
                 _sync_matched_sidecar(db, store, row, book, resolver="ai")
-        resolved += 1
+            resolved += 1
         db.conn.commit()
-    return {"resolved": resolved, "skipped": skipped, "errors": errors}
+    return {
+        "resolved": resolved,
+        "skipped": skipped,
+        "errors": errors,
+        "unresolved": unresolved,
+    }
 
 
 def choose(
