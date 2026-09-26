@@ -147,8 +147,13 @@ export type WriteBackResult = {
 };
 
 // PATCH /books/{sha}/metadata can 422 with this shape (see ApiError below).
+// `reason` is what a screen should switch on to pick a remedy:
+//   - "convert_first" - the format cannot hold metadata; offer Convert.
+//   - "not_in_library" - the only copy is the untouchable original; offer Commit.
+//   - "unwritable"     - the file is present but malformed (src/reshelf/writeback.py);
+//                        no automatic remedy, just surface `message`.
 export type MetadataErrorDetail = {
-  reason: "convert_first" | "not_in_library";
+  reason: "convert_first" | "not_in_library" | "unwritable";
   message: string;
 };
 
@@ -295,6 +300,9 @@ export const chooseCandidate = (sha256: string, candidate_id: number) =>
 export const listJobs = (limit = 50) => req<Job[]>(`/jobs?limit=${limit}`);
 export const getJob = (id: number) => req<Job>(`/jobs/${id}`);
 
+// For `commit`/`rollback` use createConfirmedJob instead - this signature
+// accepts any args, including a string/truthy `confirmed` that would only
+// fail late, at the server's 409.
 export const createJob = (command: string, args: JobArgs = {}) =>
   req<{ job_id: number }>("/jobs", {
     method: "POST",
