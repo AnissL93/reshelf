@@ -1,6 +1,7 @@
 """Atomic, locked read/write of sidecar documents."""
 
 import json
+import logging
 import os
 import threading
 from collections import defaultdict
@@ -9,6 +10,8 @@ from pathlib import Path
 
 from reshelf.config import Config
 from reshelf.store.models import Book, now
+
+logger = logging.getLogger(__name__)
 
 
 class SidecarStore:
@@ -85,7 +88,8 @@ class SidecarStore:
         for path in paths:
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.warning("skipping unreadable sidecar %s: %s", path, exc)
                 continue
             if isinstance(data, dict) and "sha256" in data:
                 yield Book.model_validate(data)

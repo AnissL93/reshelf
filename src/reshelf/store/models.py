@@ -6,6 +6,7 @@ older one. Load, mutate, dump - unknown keys ride along.
 """
 
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -91,6 +92,6 @@ class Book(BaseModel):
         def rank(f: FileEntry) -> int:
             if f.role == "converted":
                 return 0
-            return 1 if "library/" in f.path.replace("\\", "/") else 2
+            return 1 if "library" in Path(f.path).parts else 2
 
         return sorted(self.files, key=rank)[0]

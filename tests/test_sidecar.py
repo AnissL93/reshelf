@@ -151,3 +151,47 @@ def test_update_applies_the_mutation_and_bumps_updated_at(tmp_path):
 def test_update_on_a_missing_book_raises(tmp_path):
     with pytest.raises(KeyError):
         store_for(tmp_path).update(SHA, lambda b: None)
+
+
+def test_corrupt_sidecars_are_skipped_with_warning(tmp_path, caplog):
+    """Corrupt sidecars are skipped rather than aborting, with a warning logged."""
+    store = store_for(tmp_path)
+    # Save two good books
+    store.save(Book(sha256="a" * 64))
+    store.save(Book(sha256="b" * 64))
+    # Corrupt one sidecar
+    corrupt_path = store.path_for("c" * 64)
+    corrupt_path.parent.mkdir(parents=True, exist_ok=True)
+    corrupt_path.write_text("{invalid json")
+    # iter_all should skip the corrupt one and return the good ones
+    with caplog.at_level("WARNING"):
+        books = list(store.iter_all())
+    assert {b.sha256 for b in books} == {"a" * 64, "b" * 64}
+    # Verify warning was logged naming the corrupt path
+    assert any(f"skipping unreadable sidecar {corrupt_path}" in record.message for record in caplog.records)
+
+
+def test_primary_file_does_not_false_positive_on_directory_name_with_library(tmp_path):
+    """Absolute paths containing 'library' as substring should not be ranked as library copies."""
+    book = Book(
+        sha256=SHA,
+        files=[
+            FileEntry(path="/tmp/web-app-a-library/incoming/x.epub", format="epub"),
+            FileEntry(path="/tmp/other/derived/x.epub", format="epub", role="converted"),
+        ],
+    )
+    # Converted file should win, not the one with 'library' in the absolute path
+    assert book.primary_file().path == "/tmp/other/derived/x.epub"
+
+
+def test_primary_file_correctly_ranks_real_library_path(tmp_path):
+    """Paths with 'library' as an actual path segment should be ranked as library copies."""
+    book = Book(
+        sha256=SHA,
+        files=[
+            FileEntry(path="incoming/x.epub", format="epub"),
+            FileEntry(path="/srv/books/library/A/x.epub", format="epub"),
+        ],
+    )
+    # Real library path should win over incoming
+    assert book.primary_file().path == "/srv/books/library/A/x.epub"
