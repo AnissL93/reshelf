@@ -4,6 +4,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+from reshelf.db.migrations import migrate
 from reshelf.metadata.models import Candidate
 
 SCHEMA = """
@@ -144,6 +145,7 @@ class Database:
 
     def init_schema(self) -> None:
         self.conn.executescript(SCHEMA)
+        migrate(self.conn)
         self.conn.commit()
 
     def close(self) -> None:
