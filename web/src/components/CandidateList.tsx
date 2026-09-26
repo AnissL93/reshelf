@@ -4,6 +4,10 @@ import type { Candidate } from "../api";
 type CandidateListProps = {
   candidates: Candidate[];
   onChoose: (editionId: number) => void;
+  /** Shows each candidate's 1-based position (blank past 9) as a left
+   * column, for screens where a keyboard digit picks the row - the review
+   * queue. Off by default so the book detail table is unchanged. */
+  showIndex?: boolean;
 };
 
 function prettyEvidence(json: string | null): string {
@@ -15,8 +19,9 @@ function prettyEvidence(json: string | null): string {
   }
 }
 
-export default function CandidateList({ candidates, onChoose }: CandidateListProps) {
+export default function CandidateList({ candidates, onChoose, showIndex = false }: CandidateListProps) {
   const [expanded, setExpanded] = useState<number | null>(null);
+  const columnCount = showIndex ? 9 : 8;
 
   return (
     <section className="candidates">
@@ -29,6 +34,7 @@ export default function CandidateList({ candidates, onChoose }: CandidateListPro
         <table className="candidate-table">
           <thead>
             <tr>
+              {showIndex && <th></th>}
               <th>Title</th>
               <th>Author</th>
               <th>ISBN</th>
@@ -40,9 +46,12 @@ export default function CandidateList({ candidates, onChoose }: CandidateListPro
             </tr>
           </thead>
           <tbody>
-            {candidates.map((c) => (
+            {candidates.map((c, i) => (
               <Fragment key={c.edition_id}>
                 <tr>
+                  {showIndex && (
+                    <td className="candidate-index muted">{i < 9 ? i + 1 : ""}</td>
+                  )}
                   <td>{c.title || "—"}</td>
                   <td>{c.authors || "—"}</td>
                   <td>{c.isbn13 || c.isbn10 || "—"}</td>
@@ -64,7 +73,7 @@ export default function CandidateList({ candidates, onChoose }: CandidateListPro
                 </tr>
                 {expanded === c.edition_id && (
                   <tr>
-                    <td colSpan={8}>
+                    <td colSpan={columnCount}>
                       <pre className="evidence">{prettyEvidence(c.evidence_json)}</pre>
                     </td>
                   </tr>

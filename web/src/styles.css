@@ -453,3 +453,60 @@ main {
   font-size: 0.85rem;
   color: var(--muted);
 }
+
+/* -- review queue -------------------------------------------------------- */
+
+.review-header {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+}
+
+.review-header h1 {
+  margin: 0;
+}
+
+.review-counter {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.review-header button {
+  margin-left: auto;
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  cursor: pointer;
+}
+
+.review-legend {
+  list-style: none;
+  padding: 0;
+  margin: 0.75rem 0 1.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.5rem;
+  font-size: 0.85rem;
+}
+
+.review-legend kbd {
+  display: inline-block;
+  min-width: 1.2rem;
+  padding: 0.05rem 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #f7f7f7;
+  font-family: inherit;
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+.review-book {
+  margin-top: 1rem;
+}
+
+.candidate-index {
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
