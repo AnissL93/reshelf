@@ -162,10 +162,19 @@ def rename_library_copy(cfg, db, store, sha256: str) -> str | None:
     # bookkeeping below - if something after this raises (or the process
     # dies), `reshelf rollback` must still have something to undo. Mirrors
     # apply_plan's try/finally journal-on-partial-failure guarantee for a
-    # single action.
+    # single action. `sha256`/`locator` are extras apply_plan's own entries
+    # don't carry: rollback_journal needs them to find this book's sidecar,
+    # which is keyed on the incoming original, not on either of these paths.
     _write_journal(
         cfg,
-        [{"action": "import", "src": str(old), "dest": str(new), "moved": True}],
+        [{
+            "action": "import",
+            "src": str(old),
+            "dest": str(new),
+            "moved": True,
+            "sha256": sha256,
+            "locator": row["path"],
+        }],
     )
 
     def mutate(b: Book) -> None:

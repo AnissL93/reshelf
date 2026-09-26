@@ -89,6 +89,7 @@ def committed_env(tmp_path, mode: str = "copy", fmt: str = "epub"):
         "src": src,
         "dest": dest,
         "db": db,
+        "store": SidecarStore(cfg),
         "journal": journal,
         "reports": root / "reports",
         "library_dir": root / "library",
@@ -184,7 +185,9 @@ def test_rollback_restores_a_moved_original(tmp_path):
     env = committed_env(tmp_path, mode="move")
     from reshelf.planner.committer import rollback_journal
 
-    result = rollback_journal(env["journal"], env["db"], env["library_dir"])
+    result = rollback_journal(
+        env["journal"], env["db"], env["library_dir"], env["store"]
+    )
     assert result == {"reverted": 1, "skipped": 0}
     assert env["src"].exists()
     assert not env["dest"].exists()
@@ -210,3 +213,101 @@ def test_rollback_removes_copies(tmp_path):
     cfg = load_config(root)
     with Database(cfg.database.path) as db:
         assert db.conn.execute("SELECT status FROM files").fetchone()["status"] == "MATCHED"
+
+
+def _cli_committed(tmp_path, mode):
+    """init -> plan -> commit through the CLI, so pipeline.commit's own
+    sidecar bookkeeping (_record_committed_path) runs too."""
+    root, src = _setup_committed_root(tmp_path)
+    if mode == "move":
+        cfg = load_config(root)
+        cfg.library.commit_mode = "move"
+        save_config(cfg, root)
+    assert runner.invoke(app, ["commit", "--root", str(root)]).exit_code == 0
+    cfg = load_config(root)
+    sha256 = json.loads(
+        next((root / "metadata").glob("*.json")).read_text()
+    )["sha256"]
+    journal = json.loads(next((root / "reports").glob("commit-*.json")).read_text())
+    dest = Path(journal["actions"][0]["dest"])
+    return root, cfg, src, dest, sha256, journal["commit_id"]
+
+
+def test_move_mode_repoints_files_path_at_the_destination(tmp_path):
+    """I5: move mode deletes the source but left files.path naming it.
+
+    Harmless under metadata.layout=hash, wrong under the others (the
+    sidecar locator *is* files.path) and a permanent falsehood either way.
+    move_into, three branches over, has always done this.
+    """
+    root, cfg, src, dest, _sha, _cid = _cli_committed(tmp_path, "move")
+    assert not src.exists()
+    with Database(cfg.database.path) as db:
+        paths = [r["path"] for r in db.conn.execute("SELECT path FROM files")]
+    assert paths == [str(dest)]
+
+
+def test_copy_mode_still_leaves_files_path_on_the_original(tmp_path):
+    root, cfg, src, dest, _sha, _cid = _cli_committed(tmp_path, "copy")
+    with Database(cfg.database.path) as db:
+        paths = [r["path"] for r in db.conn.execute("SELECT path FROM files")]
+    assert paths == [str(src)]
+
+
+def test_rollback_of_a_moved_import_repairs_the_sidecar(tmp_path):
+    """I4: rollback restored the bytes but never the sidecar, so files[]
+    kept naming a destination that no longer existed - /file 404s, and
+    reindex cannot repair it because it rebuilds *from* the sidecars."""
+    root, cfg, src, dest, sha256, commit_id = _cli_committed(tmp_path, "move")
+    store = SidecarStore(cfg)
+    assert [f.path for f in store.load(sha256, str(src)).files] == [str(dest)]
+
+    r = runner.invoke(app, ["rollback", commit_id, "--root", str(root)])
+    assert r.exit_code == 0, r.output
+
+    assert src.exists() and not dest.exists()
+    assert [f.path for f in store.load(sha256, str(src)).files] == [str(src)]
+    with Database(cfg.database.path) as db:
+        row = db.conn.execute("SELECT path, status FROM files").fetchone()
+        assert row["path"] == str(src)
+        assert row["status"] == "MATCHED"
+
+
+def test_rollback_of_a_copied_import_drops_the_library_entry(tmp_path):
+    root, cfg, src, dest, sha256, commit_id = _cli_committed(tmp_path, "copy")
+    store = SidecarStore(cfg)
+    assert sorted(f.path for f in store.load(sha256, str(src)).files) == sorted(
+        [str(src), str(dest)]
+    )
+
+    assert runner.invoke(app, ["rollback", commit_id, "--root", str(root)]).exit_code == 0
+
+    assert not dest.exists()
+    assert [f.path for f in store.load(sha256, str(src)).files] == [str(src)]
+
+
+def test_rollback_sidecar_repair_is_idempotent(tmp_path):
+    root, cfg, src, dest, sha256, commit_id = _cli_committed(tmp_path, "move")
+    store = SidecarStore(cfg)
+    for _ in range(2):
+        runner.invoke(app, ["rollback", commit_id, "--root", str(root)])
+    assert [f.path for f in store.load(sha256, str(src)).files] == [str(src)]
+
+
+def test_rollback_leaves_the_rest_of_the_sidecar_alone(tmp_path):
+    """Only files[] is repaired - another resolver's decision is not."""
+    root, cfg, src, dest, sha256, commit_id = _cli_committed(tmp_path, "move")
+    store = SidecarStore(cfg)
+
+    def decide(b):
+        b.source.resolver = "human"
+        b.source.confidence = 1.0
+        b.metadata.title = "Hand-corrected"
+
+    store.update(sha256, decide, str(src))
+    runner.invoke(app, ["rollback", commit_id, "--root", str(root)])
+
+    book = store.load(sha256, str(src))
+    assert book.source.resolver == "human"
+    assert book.metadata.title == "Hand-corrected"
+    assert [f.path for f in book.files] == [str(src)]

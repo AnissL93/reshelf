@@ -183,14 +183,23 @@ def test_rename_library_copy_journal_round_trips_through_rollback(tmp_path):
             "src": str(library_path),
             "dest": new_path,
             "moved": True,
+            # rollback_journal cannot find this book's sidecar from either
+            # path: it is keyed on the incoming original, which never moved.
+            "sha256": sha256,
+            "locator": str(src),
         }
     ]
 
-    result = rollback_journal(journal, db, Path(cfg.library.root) / "library")
+    result = rollback_journal(journal, db, Path(cfg.library.root) / "library", store)
     assert result == {"reverted": 1, "skipped": 0}
     assert library_path.exists()
     assert not Path(new_path).exists()
     assert src.exists()  # untouched throughout
+    # I4: rollback used to restore the bytes and leave files[] naming the
+    # destination it had just removed - /books/{sha}/file 404s from then
+    # on, and reindex cannot repair it because it rebuilds *from* here.
+    book = store.load(sha256, str(src))
+    assert sorted(f.path for f in book.files) == sorted([str(src), str(library_path)])
     db.close()
 
 

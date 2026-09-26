@@ -7,6 +7,9 @@ from uuid import uuid4
 
 from reshelf.db.database import Database
 from reshelf.scanner.hashing import sha256_file
+from reshelf.store import index
+from reshelf.store.models import Book
+from reshelf.store.sidecar import SidecarStore
 
 
 def _safe(component: str) -> str:
@@ -113,6 +116,16 @@ def apply_plan(
                             shutil.move(action["file"], dest)
                         else:
                             shutil.copy2(action["file"], dest)
+                    if mode == "move":
+                        # Same bookkeeping move_into does. In copy mode the
+                        # source is still there and files.path stays right;
+                        # in move mode it is gone, and a row still naming it
+                        # is simply false - and makes the sidecar locator
+                        # (which is files.path) point at nothing.
+                        db.conn.execute(
+                            "UPDATE files SET path=? WHERE path=?",
+                            (str(dest), action["file"]),
+                        )
                     db.set_status(row["id"], "COMMITTED")
                     db.conn.commit()
                 done.append(
@@ -167,7 +180,54 @@ def _prune_empty(parent: Path, library_dir: Path) -> None:
         parent = parent.parent
 
 
-def rollback_journal(journal: dict, db: Database, library_dir: Path) -> dict:
+def _restore_sidecar(db: Database, store: SidecarStore, entry: dict) -> None:
+    """Point the sidecar's files[] back at the path the bytes returned to.
+
+    Rollback that only moves files leaves `book.files[]` naming a
+    destination that no longer exists: `/books/{sha}/file` 404s and
+    `reindex` cannot repair it, because reindex rebuilds *from* the
+    sidecars. This is the inverse of pipeline._record_committed_path (and
+    of writeback.rename_library_copy's repoint).
+
+    Renaming the entry in place rather than dropping and re-adding it
+    keeps `role`/`sha256`/`size`; the dedupe afterwards collapses the
+    copy-mode case, where files[] holds both src and dest. Idempotent: a
+    second run finds no `dest` entry and changes nothing. Nothing outside
+    files[] is touched, so another resolver's metadata is left alone.
+
+    `sha256`/`locator` come off the journal entry when it carries them
+    (writeback's tier-2 rename, whose sidecar is keyed on neither of these
+    paths); otherwise the DB knows, and the locator is the original src.
+    """
+    src, dest = entry["src"], entry["dest"]
+    sha256, locator = entry.get("sha256"), entry.get("locator") or src
+    if not sha256:
+        row = db.conn.execute(
+            "SELECT sha256 FROM files WHERE path IN (?,?)", (src, dest)
+        ).fetchone()
+        if row is None or not row["sha256"]:
+            return
+        sha256 = row["sha256"]
+
+    def mutate(book: Book) -> None:
+        kept: list = []
+        for f in book.files:
+            if f.path == dest:
+                f.path = src
+            if not any(k.path == f.path for k in kept):
+                kept.append(f)
+        book.files = kept
+
+    try:
+        book = store.update(sha256, mutate, locator)
+    except (KeyError, OSError):
+        return  # no sidecar to repair (or it is unreadable); the bytes still moved
+    index.sync(db.conn, book)
+
+
+def rollback_journal(
+    journal: dict, db: Database, library_dir: Path, store: SidecarStore
+) -> dict:
     reverted: list[dict] = []
     skipped: list[dict] = []
     for entry in reversed(journal.get("actions", [])):
@@ -180,6 +240,12 @@ def rollback_journal(journal: dict, db: Database, library_dir: Path) -> dict:
                 src.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(dest), src)
                 _prune_empty(dest.parent, library_dir)
+                # apply_plan repointed files.path at dest when it moved the
+                # file; put it back before the status update below looks
+                # the row up by src.
+                db.conn.execute(
+                    "UPDATE files SET path=? WHERE path=?", (str(src), str(dest))
+                )
             elif dest.exists():
                 dest.unlink()
                 _prune_empty(dest.parent, library_dir)
@@ -187,6 +253,7 @@ def rollback_journal(journal: dict, db: Database, library_dir: Path) -> dict:
                 "UPDATE files SET status='MATCHED' WHERE path=? AND status='COMMITTED'",
                 (str(src),),
             )
+            _restore_sidecar(db, store, entry)
             reverted.append(entry)
         else:  # quarantine / mark_duplicate were moves
             if dest.exists() and not src.exists():
@@ -195,6 +262,7 @@ def rollback_journal(journal: dict, db: Database, library_dir: Path) -> dict:
                 db.conn.execute(
                     "UPDATE files SET path=? WHERE path=?", (str(src), str(dest))
                 )
+                _restore_sidecar(db, store, entry)
                 reverted.append(entry)
             else:
                 skipped.append({**entry, "reason": "cannot restore"})

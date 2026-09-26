@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from reshelf import pipeline
+from reshelf.paths import resolve_inside, resolve_inside_root
 from reshelf.store.bootstrap import reindex as _reindex
 
 logger = logging.getLogger(__name__)
@@ -46,9 +47,32 @@ def _latest_plan(cfg) -> Path:
     return plans[-1]
 
 
+# Every path below arrives in a job's args_json, i.e. from an HTTP body.
+# The GET previews the UI gates commit/rollback on already refuse a path
+# that escapes reports/ (web.api.jobs); the commands that actually move
+# files must refuse the same ones, or the gate only guards the preview.
+def _plan_arg(cfg, args: dict) -> Path:
+    if not args.get("plan"):
+        return _latest_plan(cfg)
+    path = resolve_inside_root(Path(cfg.library.root) / "reports", args["plan"])
+    if path is None:
+        raise ValueError(f"no such plan under reports/: {args['plan']}")
+    return path
+
+
+def _scan_arg(cfg, args: dict) -> Path:
+    if not args.get("path"):
+        return Path(cfg.library.incoming)
+    root = Path(cfg.library.root)
+    path = resolve_inside(root, args["path"])
+    if path is None or not path.is_dir():
+        raise ValueError(f"no such directory under {root}: {args['path']}")
+    return path
+
+
 COMMANDS: dict[str, Callable] = {
     "scan": lambda cfg, db, store, args, progress: pipeline.scan(
-        cfg, db, store, Path(args.get("path") or cfg.library.incoming), progress
+        cfg, db, store, _scan_arg(cfg, args), progress
     ),
     "extract": lambda cfg, db, store, args, progress: pipeline.extract(
         cfg, db, store, bool(args.get("force")), progress
@@ -64,14 +88,14 @@ COMMANDS: dict[str, Callable] = {
         pipeline.plan(cfg, db, store)
     ),
     "commit": lambda cfg, db, store, args, progress: pipeline.commit(
-        cfg, db, store, Path(args["plan"]) if args.get("plan") else _latest_plan(cfg),
+        cfg, db, store, _plan_arg(cfg, args),
         progress,
         dry_run=bool(args.get("dry_run")),
         do_quarantine=bool(args.get("quarantine")),
         do_duplicates=bool(args.get("duplicates")),
     ),
     "rollback": lambda cfg, db, store, args, progress: pipeline.rollback(
-        cfg, db, args["commit_id"], progress
+        cfg, db, store, args["commit_id"], progress
     ),
     "reindex": lambda cfg, db, store, args, progress: _reindex(db, store, progress),
     "rematch": lambda cfg, db, store, args, progress: [
@@ -279,6 +303,15 @@ class JobRunner:
         if job is None or job["status"] != "queued":
             return
 
+        # Register the cancel event *before* the claim. cancel() picks its
+        # strategy from whether this entry exists: no entry means "still
+        # queued, cancel it in SQL". Claiming first left a window in which
+        # the row already said 'running' while the entry was still absent,
+        # so a DELETE landing there did neither - it returned False and the
+        # job ran to completion.
+        cancel = threading.Event()
+        self._cancels[job_id] = cancel
+
         # Claim the job atomically: between the get() above and here, a
         # concurrent cancel() of a still-queued job may already have set
         # status='cancelled'. Re-validating status in the WHERE clause (like
@@ -292,10 +325,18 @@ class JobRunner:
             ).rowcount
             self.db.conn.commit()
         if not changed:
+            self._cancels.pop(job_id, None)
             return  # cancelled (or otherwise resolved) while we were picking it up
 
-        cancel = threading.Event()
-        self._cancels[job_id] = cancel
+        if cancel.is_set():
+            # Cancelled between the registration above and the claim: the
+            # UPDATE still saw 'queued' and won. Honour it here rather than
+            # waiting for the first progress() call of a job the user has
+            # already given up on.
+            self._finish(job_id, "cancelled")
+            self._cancels.pop(job_id, None)
+            return
+
         self._publish(job_id)
 
         try:

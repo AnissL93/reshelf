@@ -157,8 +157,14 @@ class Database:
         self.conn.commit()
 
     def close(self) -> None:
+        """Idempotent: `serve` closes in a finally that may run after the
+        ASGI lifespan has already closed, and a double os.close() on a
+        recycled fd is worse than a no-op."""
+        if self._lock_fd is None:
+            return
         self.conn.close()
         os.close(self._lock_fd)
+        self._lock_fd = None
         self.lock_path.unlink(missing_ok=True)
 
     def __enter__(self) -> "Database":

@@ -227,3 +227,64 @@ def test_the_real_pipeline_commands_are_registered():
         "scan", "extract", "match", "resolve", "plan", "commit", "rollback",
         "reindex", "rematch", "convert",
     } <= set(COMMANDS)
+
+
+def test_the_cancel_event_exists_before_the_row_ever_says_running(runner, monkeypatch):
+    """The window behind the 1-in-13 flake in test_delete_cancels.
+
+    cancel() picks its strategy from whether `_cancels` holds the job:
+    absent means "still queued, cancel it in SQL". The claim UPDATE used
+    to run *before* the registration, so for the width of that window the
+    row said 'running' while cancel() still believed the job was queued -
+    the SQL UPDATE matched nothing, cancel() returned False, and the job
+    ran to completion.
+
+    Probed at the claim itself: _now() is evaluated as an argument to the
+    claim UPDATE, inside the worker thread, immediately before it runs.
+    """
+    import reshelf.web.jobs as jobs_module
+
+    observations: list[bool] = []
+    real_now = jobs_module._now
+
+    def spy() -> str:
+        if threading.current_thread().name == "jobs":
+            observations.append(bool(runner._cancels))
+        return real_now()
+
+    monkeypatch.setattr(jobs_module, "_now", spy)
+
+    def slow(cfg, db, store, args, progress):
+        for n in range(200):
+            progress(n, 200, "working")
+            time.sleep(0.01)
+
+    monkeypatch.setitem(COMMANDS, "slow", slow)
+
+    job_id = runner.enqueue("slow")
+    assert wait_for(runner, job_id, "running")
+    assert runner.cancel(job_id) is True
+    assert wait_for(runner, job_id, "cancelled")
+
+    # The first thing the worker thread does for this job is the claim.
+    assert observations and observations[0] is True
+
+
+def test_cancelling_between_registration_and_the_claim_still_cancels(
+    runner, monkeypatch
+):
+    """The mirror case the earlier ordering handled and the new one must
+    keep handling: the cancel lands while the row is still 'queued'."""
+    def slow(cfg, db, store, args, progress):
+        for n in range(200):
+            progress(n, 200, "working")
+            time.sleep(0.01)
+
+    monkeypatch.setitem(COMMANDS, "slow", slow)
+    job_id = runner.enqueue("slow")
+    for _ in range(500):
+        if job_id in runner._cancels:
+            break
+        time.sleep(0.001)
+    runner.cancel(job_id)
+    assert wait_for(runner, job_id, "cancelled")

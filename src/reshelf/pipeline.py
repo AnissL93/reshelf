@@ -33,6 +33,7 @@ from reshelf.matching.scorer import (
 from reshelf.metadata.isbn import find_isbns
 from reshelf.metadata.models import Candidate
 from reshelf.metadata.normalization import search_author, short_title, title_from_filename
+from reshelf.paths import resolve_inside_root
 from reshelf.planner.committer import apply_plan, rollback_journal
 from reshelf.planner.planner import generate_plan
 from reshelf.providers.cache import FileCache
@@ -660,8 +661,12 @@ def _record_committed_path(db: Database, store: SidecarStore, entry: dict) -> No
     """Keep the sidecar's files[] honest after a copy or move."""
     if entry.get("action") != "import":
         return
+    # In move mode apply_plan has already repointed files.path at dest, so
+    # src alone no longer finds the row. The *locator* below stays src
+    # regardless: it names the document, not where the bytes ended up.
     row = db.conn.execute(
-        "SELECT sha256, format FROM files WHERE path = ?", (entry["src"],)
+        "SELECT sha256, format FROM files WHERE path IN (?,?)",
+        (entry["src"], entry["dest"]),
     ).fetchone()
     if row is None or not row["sha256"]:
         return
@@ -677,13 +682,26 @@ def _record_committed_path(db: Database, store: SidecarStore, entry: dict) -> No
     index.sync(db.conn, book)
 
 
-def rollback(cfg: Config, db: Database, commit_id: str, progress: Progress) -> dict:
+def rollback(
+    cfg: Config,
+    db: Database,
+    store: SidecarStore,
+    commit_id: str,
+    progress: Progress,
+) -> dict:
     progress(0, None, f"rolling back {commit_id}")
-    journal_path = Path(cfg.library.root) / "reports" / f"commit-{commit_id}.json"
-    if not journal_path.exists():
-        raise FileNotFoundError(f"no journal at {journal_path}")
+    # commit_id reaches here straight off a URL path parameter (web) or
+    # argv (CLI) and is interpolated into a filename. Without this, an id
+    # of "../../../etc/whatever" loads arbitrary JSON into rollback_journal
+    # - which will shutil.move whatever paths that JSON names.
+    reports_dir = Path(cfg.library.root) / "reports"
+    journal_path = resolve_inside_root(reports_dir, f"commit-{commit_id}.json")
+    if journal_path is None:
+        raise FileNotFoundError(
+            f"no journal at {reports_dir / f'commit-{commit_id}.json'}"
+        )
     journal = json.loads(journal_path.read_text())
-    return rollback_journal(journal, db, Path(cfg.library.root) / "library")
+    return rollback_journal(journal, db, Path(cfg.library.root) / "library", store)
 
 
 def convert_book(

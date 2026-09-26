@@ -206,7 +206,9 @@ def rollback(
     cfg = load_config(root)
     with Database(cfg.database.path) as db:
         try:
-            result = pipeline.rollback(cfg, db, commit_id, _bar("Rolling back"))
+            result = pipeline.rollback(
+                cfg, db, SidecarStore(cfg), commit_id, _bar("Rolling back")
+            )
         except FileNotFoundError as e:
             typer.echo(str(e), err=True)
             raise typer.Exit(1)
@@ -288,11 +290,19 @@ def serve(
     except LockError as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(1)
-    uvicorn.run(
-        fastapi_app,
-        host=host or cfg.web.host,
-        port=port or cfg.web.port,
-    )
+    # create_app already took db.lock. If uvicorn never gets as far as
+    # running the lifespan - a port already in use is the everyday case -
+    # nothing else would release it, and the next `reshelf <anything>`
+    # refuses to start against a lock file no process holds. Database.close
+    # is idempotent, so the normal shutdown path closing it first is fine.
+    try:
+        uvicorn.run(
+            fastapi_app,
+            host=host or cfg.web.host,
+            port=port or cfg.web.port,
+        )
+    finally:
+        fastapi_app.state.reshelf.db.close()
 
 
 @app.command()
@@ -309,4 +319,12 @@ def reindex(root: Path = ROOT_OPTION) -> None:
 
 
 def main() -> None:
-    app()
+    """Entry point. One `serve` holds db.lock all day, so every other
+    command meeting it is routine - report it instead of a traceback."""
+    from reshelf.db.database import LockError
+
+    try:
+        app()
+    except LockError as e:
+        typer.echo(str(e), err=True)
+        raise SystemExit(1) from None
