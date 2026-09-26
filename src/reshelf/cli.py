@@ -26,22 +26,29 @@ from reshelf.providers.douban import DoubanProvider
 from reshelf.providers.openlibrary import OpenLibraryProvider
 from reshelf.reports.report import build_report
 from reshelf.db.database import Database
-from reshelf.extractors.base import ExtractionError
-from reshelf.extractors.epub import extract_epub
-from reshelf.extractors.mobi import extract_mobi
-from reshelf.extractors.pdf import extract_pdf
-from reshelf.metadata.isbn import find_isbns
 from reshelf.metadata.normalization import (
     search_author,
     short_title,
     title_from_filename,
 )
-from reshelf.scanner.hashing import sha256_file
-from reshelf.scanner.scanner import iter_files
+from reshelf import pipeline
+from reshelf.store.sidecar import SidecarStore
 
 app = typer.Typer(no_args_is_help=True)
 
 ROOT_OPTION = typer.Option(Path("."), "--root", help="Library root (with config.yaml)")
+
+
+def _bar(label: str):
+    """Progress callback that prints to stderr; the job runner uses its own."""
+    console = Console(stderr=True)
+
+    def report(done: int, total: int | None, message: str) -> None:
+        suffix = f"/{total}" if total else ""
+        console.print(f"{label} {done}{suffix}: {message}", end="\r", highlight=False)
+
+    return report
+
 
 SUBDIRS = [
     "incoming", "library", "quarantine", "duplicates", "covers",
@@ -76,31 +83,13 @@ def scan(
     """Discover ebook files and record them incrementally."""
     cfg = load_config(root)
     target = path or cfg.library.incoming
-    seen = added = changed = dups = 0
     with Database(cfg.database.path) as db:
-        run_id = db.start_scan_run(str(target))
-        for fi in iter_files(Path(target), cfg.scan.formats, cfg.scan.recursive):
-            seen += 1
-            fid, state = db.upsert_file(fi.path, fi.size, fi.mtime, fi.extension)
-            if state == "unchanged":
-                continue
-            added += state == "new"
-            changed += state == "changed"
-            if db.set_hash(fid, sha256_file(Path(fi.path))):
-                dups += 1
-            db.conn.commit()
-        db.finish_scan_run(run_id, seen, added, changed)
-        db.conn.commit()
-    typer.echo(f"seen={seen} added={added} changed={changed} duplicates={dups}")
-
-
-_EXTRACTORS = {
-    "epub": extract_epub,
-    "pdf": extract_pdf,
-    "mobi": extract_mobi,
-    "azw": extract_mobi,
-    "azw3": extract_mobi,
-}
+        db.init_schema()
+        r = pipeline.scan(cfg, db, SidecarStore(cfg), Path(target), _bar("Scanning"))
+    typer.echo(
+        f"seen={r['seen']} added={r['added']} changed={r['changed']}"
+        f" duplicates={r['duplicates']}"
+    )
 
 
 @app.command()
@@ -110,33 +99,10 @@ def extract(
 ) -> None:
     """Extract embedded metadata from scanned files."""
     cfg = load_config(root)
-    statuses = ["SCANNED"] + (["ERROR", "IDENTIFIED"] if force else [])
-    done = errors = 0
     with Database(cfg.database.path) as db:
-        rows = [r for s in statuses for r in db.files_with_status(s)]
-        for row in rows:
-            extractor = _EXTRACTORS.get(row["format"])
-            path = Path(row["path"])
-            try:
-                if extractor is None:
-                    raise ExtractionError(f"unsupported format {row['format']}")
-                meta = extractor(path)
-            except ExtractionError:
-                db.set_status(row["id"], "ERROR")
-                errors += 1
-                continue
-            isbns = meta.isbns or find_isbns(path.name)
-            db.set_raw_metadata(
-                row["id"],
-                title=meta.title,
-                author="; ".join(meta.authors) or None,
-                isbn=isbns[0] if isbns else None,
-                language=meta.language,
-            )
-            db.set_status(row["id"], "IDENTIFIED")
-            done += 1
-        db.conn.commit()
-    typer.echo(f"extracted={done} errors={errors}")
+        db.init_schema()
+        r = pipeline.extract(cfg, db, SidecarStore(cfg), force, _bar("Extracting"))
+    typer.echo(f"extracted={r['extracted']} errors={r['errors']}")
 
 
 _BAND_TO_STATUS = {
