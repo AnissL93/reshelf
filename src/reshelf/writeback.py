@@ -6,7 +6,11 @@ the escalating, opt-in extras on top:
 Tier 2, `rename_library_copy`, renames the committed copy under library/ to
 follow corrected metadata. It journals the move in the same shape
 `apply_plan` writes (`reports/commit-<id>.json`, entries under `"actions"`),
-so `reshelf rollback <id>` can undo it exactly like any other commit.
+so `reshelf rollback <id>` can undo it exactly like any other commit. The
+source it renames is whichever `book.files` entry the sidecar records under
+`<root>/library` - never the DB `files.path`, which (in the default "copy"
+commit mode) keeps pointing at the `incoming/` original forever and is not
+a safe stand-in for "where the committed copy currently lives".
 
 Tier 3, `embed_metadata`, writes metadata into the file itself - EPUB via
 the OPF rewriter, PDF via pymupdf. It only ever touches whatever path it is
@@ -24,9 +28,9 @@ from uuid import uuid4
 import pymupdf as fitz
 
 from reshelf.convert.epub_writer import UnsupportedEpub, rewrite_metadata
-from reshelf.planner.committer import dest_for
+from reshelf.planner.committer import _unique_dest, dest_for
 from reshelf.store import index
-from reshelf.store.models import Book, BookMetadata
+from reshelf.store.models import Book, BookMetadata, FileEntry
 
 EMBEDDABLE: frozenset[str] = frozenset({"epub", "pdf"})
 
@@ -65,9 +69,8 @@ def embed_metadata(path: Path, metadata: BookMetadata) -> None:
     # save. Fall back to write-to-temp-then-replace (same atomic pattern as
     # epub_writer._write_zip) when incremental save isn't available, so a
     # failed save never leaves a half-written PDF behind.
-    doc = fitz.open(str(path))
-    closed = False
-    try:
+    tmp: Path | None = None
+    with fitz.open(str(path)) as doc:
         info = dict(doc.metadata or {})
         info["title"] = metadata.title or ""
         info["author"] = "; ".join(metadata.authors)
@@ -79,12 +82,8 @@ def embed_metadata(path: Path, metadata: BookMetadata) -> None:
         else:
             tmp = path.with_name(path.name + ".tmp")
             doc.save(str(tmp), deflate=True)
-            doc.close()
-            closed = True
-            os.replace(tmp, path)
-    finally:
-        if not closed:
-            doc.close()
+    if tmp is not None:
+        os.replace(tmp, path)
 
 
 def _write_journal(cfg, entries: list[dict]) -> None:
@@ -106,6 +105,18 @@ def _write_journal(cfg, entries: list[dict]) -> None:
     )
 
 
+def _library_entry(book: Book, library_dir: Path) -> FileEntry | None:
+    """The `book.files` entry that actually lives under `library_dir`, if any."""
+    library_dir = library_dir.resolve()
+    for entry in book.files:
+        try:
+            Path(entry.path).resolve().relative_to(library_dir)
+        except ValueError:
+            continue
+        return entry
+    return None
+
+
 def rename_library_copy(cfg, db, store, sha256: str) -> str | None:
     """Re-derive the library path from current metadata and move the copy there.
 
@@ -121,7 +132,11 @@ def rename_library_copy(cfg, db, store, sha256: str) -> str | None:
     if book is None:
         return None
 
-    old = Path(row["path"])
+    library_dir = Path(cfg.library.root) / "library"
+    old_entry = _library_entry(book, library_dir)
+    if old_entry is None:
+        return None
+    old = Path(old_entry.path)
     if not old.exists():
         return None
 
@@ -136,26 +151,30 @@ def rename_library_copy(cfg, db, store, sha256: str) -> str | None:
             "publication_date": m.pubdate,
         },
     }
-    new = dest_for(action, Path(cfg.library.root) / "library")
+    new, already = _unique_dest(dest_for(action, library_dir), sha256)
     if new == old:
         return str(old)
 
-    # ponytail: no collision handling for two books landing on the same
-    # derived name; add _unique_dest-style suffixing if that turns up.
-    new.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(old), str(new))
-
-    db.conn.execute("UPDATE files SET path = ? WHERE id = ?", (str(new), row["id"]))
-    db.conn.commit()
+    if not already:
+        new.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(old), str(new))
+        # Journal the move the instant it has happened, before any of the
+        # bookkeeping below - if something after this raises (or the
+        # process dies), `reshelf rollback` must still have something to
+        # undo. Mirrors apply_plan's try/finally journal-on-partial-failure
+        # guarantee for a single action.
+        _write_journal(
+            cfg,
+            [{"action": "import", "src": str(old), "dest": str(new), "moved": True}],
+        )
+    # else: a byte-identical copy already sits at the derived name (e.g. an
+    # earlier rename that died before this point) - nothing to move.
 
     def mutate(b: Book) -> None:
         for entry in b.files:
-            if entry.path == str(old):
+            if entry.path == old_entry.path:
                 entry.path = str(new)
 
     book = store.update(sha256, mutate, str(new))
     index.sync(db.conn, book)
-    _write_journal(
-        cfg, [{"action": "import", "src": str(old), "dest": str(new), "moved": True}]
-    )
     return str(new)
