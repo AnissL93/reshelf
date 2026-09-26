@@ -10,6 +10,7 @@ with warnings.catch_warnings():
     from fastapi.testclient import TestClient
 
 from reshelf.config import default_config, save_config
+from reshelf.covers import cover_path, thumb_path
 from reshelf.db.database import Database
 from reshelf.metadata.models import Author, Candidate, Edition, Work
 from reshelf.store import index
@@ -158,3 +159,91 @@ def test_candidates_keep_every_co_author(client):
         assert len(body) == 1
         authors = {a.strip() for a in body[0]["authors"].split(";")}
         assert authors == {"Terry Pratchett", "Neil Gaiman"}
+
+
+# -- minors ---------------------------------------------------------------
+
+
+def test_has_cover_is_false_until_the_thumbnail_exists_too(client, tmp_path):
+    """The grid requests ?size=thumb; ensure_cover writes the 600px image
+    first and can fail before the 200px one, so a flag that only tested
+    the full image put a broken <img> in every card."""
+    covers = tmp_path / "covers"
+    covers.mkdir(exist_ok=True)
+    cover_path(covers, SHA).write_bytes(b"jpegish")
+
+    item = next(i for i in client.get("/api/books").json()["items"] if i["sha256"] == SHA)
+    assert item["has_cover"] is False
+    assert client.get(f"/api/books/{SHA}").json()["has_cover"] is False
+    assert client.get(f"/api/books/{SHA}/cover?size=thumb").status_code == 404
+
+    thumb_path(covers, SHA).write_bytes(b"jpegish")
+    item = next(i for i in client.get("/api/books").json()["items"] if i["sha256"] == SHA)
+    assert item["has_cover"] is True
+
+
+def test_file_serves_the_row_that_was_clicked_not_the_first_original(tmp_path):
+    """A committed book has two files[] entries with role "original" - the
+    incoming source and the library copy. ?original=true could only ever
+    serve the first, so clicking the library/... row downloaded the
+    incoming copy."""
+    cfg = default_config(tmp_path)
+    for sub in ("incoming", "library", "db", "metadata", "reports", "covers"):
+        (tmp_path / sub).mkdir(parents=True, exist_ok=True)
+    save_config(cfg, tmp_path)
+
+    incoming = tmp_path / "incoming" / "x.epub"
+    incoming.write_bytes(b"INCOMING BYTES")
+    library = tmp_path / "library" / "A" / "x.epub"
+    library.parent.mkdir(parents=True)
+    library.write_bytes(b"LIBRARY BYTES")
+
+    db = Database(cfg.database.path)
+    db.init_schema()
+    store = SidecarStore(cfg)
+    book = Book(
+        sha256=SHA,
+        files=[
+            FileEntry(path=str(incoming), format="epub"),
+            FileEntry(path=str(library), format="epub"),
+        ],
+    )
+    store.save(book, str(incoming))
+    db.conn.execute(
+        "INSERT INTO files (path, sha256, format, status)"
+        " VALUES (?,?,'epub','COMMITTED')",
+        (str(incoming), SHA),
+    )
+    db.conn.commit()
+    db.close()
+
+    with TestClient(create_app(tmp_path)) as c:
+        assert c.get(f"/api/books/{SHA}/file", params={"path": str(library)}).content == (
+            b"LIBRARY BYTES"
+        )
+        assert c.get(f"/api/books/{SHA}/file", params={"path": str(incoming)}).content == (
+            b"INCOMING BYTES"
+        )
+        # no path: the primary, which is the library copy
+        assert c.get(f"/api/books/{SHA}/file").content == b"LIBRARY BYTES"
+        # a path that is not one of this book's files is not served
+        assert c.get(
+            f"/api/books/{SHA}/file", params={"path": "/etc/passwd"}
+        ).status_code == 404
+
+
+def test_get_book_with_no_files_rows_is_404_under_a_non_hash_layout(tmp_path):
+    """store.load(sha, None) raised ValueError under sidecar|library - a
+    500 where the answer is simply "no such book"."""
+    cfg = default_config(tmp_path)
+    cfg.metadata.layout = "sidecar"
+    for sub in ("incoming", "library", "db", "metadata", "reports", "covers"):
+        (tmp_path / sub).mkdir(parents=True, exist_ok=True)
+    save_config(cfg, tmp_path)
+    db = Database(cfg.database.path)
+    db.init_schema()
+    db.close()
+
+    with TestClient(create_app(tmp_path)) as c:
+        assert c.get(f"/api/books/{SHA}").status_code == 404
+        assert c.get(f"/api/books/{SHA}/file").status_code == 404

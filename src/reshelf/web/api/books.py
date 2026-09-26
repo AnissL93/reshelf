@@ -6,10 +6,11 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
-from reshelf.covers import cover_path, thumb_path
+from reshelf.covers import cover_path, has_cover, thumb_path
+from reshelf.paths import resolve_inside_root, under
 from reshelf.store import index
 from reshelf.store.models import now as models_now
-from reshelf.web.deps import AppState, get_state, resolve_inside_root
+from reshelf.web.deps import AppState, get_state
 from reshelf.web.schemas import (
     BookDetail,
     BookList,
@@ -53,7 +54,7 @@ def list_books(
     items = [
         BookListItem(
             **{k: row.get(k) for k in BookListItem.model_fields if k != "has_cover"},
-            has_cover=cover_path(covers, row["sha256"]).exists(),
+            has_cover=has_cover(covers, row["sha256"]),
         )
         for row in rows
     ]
@@ -83,6 +84,10 @@ def _candidates(state: AppState, sha256: str) -> list[dict]:
     return candidates
 
 
+def _library_dir(state: AppState) -> Path:
+    return Path(state.cfg.library.root) / "library"
+
+
 @router.get("/books/{sha256}", response_model=BookDetail)
 def get_book(sha256: str, state: AppState = Depends(get_state)) -> BookDetail:
     with state.db.lock:
@@ -92,13 +97,18 @@ def get_book(sha256: str, state: AppState = Depends(get_state)) -> BookDetail:
     book = state.store.load(sha256, rows[0]["path"] if rows else None)
     if book is None:
         raise HTTPException(404, "no such book")
+    primary = book.primary_file(_library_dir(state))
     return BookDetail(
         sha256=sha256,
         sidecar=book.model_dump(mode="json", by_alias=True),
         status=rows[0]["status"] if rows else None,
         paths=[r["path"] for r in rows],
         candidates=_candidates(state, sha256),
-        has_cover=cover_path(state.cfg.library.root / "covers", sha256).exists(),
+        has_cover=has_cover(state.cfg.library.root / "covers", sha256),
+        # Resolved here, once, with the library root in hand. The SPA used
+        # to re-derive it from files[] and could not do the containment
+        # check without the root, so it kept a fourth copy of the ranking.
+        primary_format=primary.format if primary else None,
     )
 
 
@@ -147,17 +157,19 @@ def patch_metadata(
     library_file = None
     embedded = False
 
+    library_dir = _library_dir(state)
+
     # Tier 3 before tier 2, so embedding targets a stable path - renaming
     # first would move the file out from under the path we're about to
     # write into.
     if payload.write_back.embed:
-        primary = book.primary_file()
+        primary = book.primary_file(library_dir)
         if primary is None:
             warnings.append("no file on disk to embed into")
         elif (
             primary.format in EMBEDDABLE
             and primary.role != "converted"
-            and "library" not in Path(primary.path).parts
+            and not under(primary.path, library_dir)
         ):
             # Format is fine but the only copy is the incoming/ original -
             # embed_metadata's own convert_first check would never catch
@@ -174,8 +186,23 @@ def patch_metadata(
                 },
             )
         else:
+            # A sidecar's files[] is user-editable JSON and the file it
+            # names can be deleted out of band; embed_metadata on a
+            # missing path is an unhandled OSError (a 500) rather than
+            # something the UI can explain. Tier 1 is already written at
+            # this point, so report it in the same shape as the other
+            # tier-3 refusals.
+            target = Path(primary.path)
+            if not target.exists():
+                raise HTTPException(
+                    422,
+                    {
+                        "message": f"no file at {target}; rescan or reconvert the book",
+                        "reason": "file_missing",
+                    },
+                )
             try:
-                embed_metadata(Path(primary.path), book.metadata)
+                embed_metadata(target, book.metadata)
                 embedded = True
             except UnsupportedWriteBack as e:
                 raise HTTPException(
@@ -187,7 +214,11 @@ def patch_metadata(
         if library_file is None:
             warnings.append("not committed to library/ yet; nothing to rename")
         else:
-            book = state.store.load(sha256, library_file)
+            # The sidecar locator is `row["path"]` - the same one the
+            # mutate above used, and the one rename_library_copy itself
+            # stores under. Reloading on the *new library path* asks a
+            # sidecar|library layout for a JSON file that does not exist.
+            book = state.store.load(sha256, row["path"] if row else None) or book
 
     return WriteBackResult(
         sidecar=book.model_dump(mode="json", by_alias=True),
@@ -226,8 +257,16 @@ def get_file(
     sha256: str,
     request: Request,
     original: bool = False,
+    path: str | None = None,
     state: AppState = Depends(get_state),
 ):
+    """Serve one of the book's files.
+
+    `path` names exactly which `files[]` entry to serve - the detail view
+    lists every one of them, and `original=true` alone cannot say *which*
+    original was clicked (a committed book has two). `original` is kept
+    for callers that just want "the source file, whichever it is".
+    """
     with state.db.lock:
         row = state.db.conn.execute(
             "SELECT path FROM files WHERE sha256 = ? ORDER BY id LIMIT 1", (sha256,)
@@ -235,11 +274,12 @@ def get_file(
     book = state.store.load(sha256, row["path"] if row else None)
     if book is None:
         raise HTTPException(404, "no such book")
-    entry = (
-        next((f for f in book.files if f.role == "original"), None)
-        if original
-        else book.primary_file()
-    )
+    if path is not None:
+        entry = next((f for f in book.files if f.path == path), None)
+    elif original:
+        entry = next((f for f in book.files if f.role == "original"), None)
+    else:
+        entry = book.primary_file(_library_dir(state))
     if entry is None:
         raise HTTPException(404, "no file recorded for this book")
     path = resolve_inside_root(Path(state.cfg.library.root), entry.path)

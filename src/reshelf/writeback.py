@@ -28,6 +28,7 @@ from uuid import uuid4
 import pymupdf as fitz
 
 from reshelf.convert.epub_writer import UnsupportedEpub, rewrite_metadata
+from reshelf.paths import under
 from reshelf.planner.committer import dest_for, unique_dest
 from reshelf.store import index
 from reshelf.store.models import Book, BookMetadata, FileEntry
@@ -107,14 +108,7 @@ def _write_journal(cfg, entries: list[dict]) -> None:
 
 def _library_entry(book: Book, library_dir: Path) -> FileEntry | None:
     """The `book.files` entry that actually lives under `library_dir`, if any."""
-    library_dir = library_dir.resolve()
-    for entry in book.files:
-        try:
-            Path(entry.path).resolve().relative_to(library_dir)
-        except ValueError:
-            continue
-        return entry
-    return None
+    return next((e for e in book.files if under(e.path, library_dir)), None)
 
 
 def rename_library_copy(cfg, db, store, sha256: str) -> str | None:
@@ -151,30 +145,40 @@ def rename_library_copy(cfg, db, store, sha256: str) -> str | None:
             "publication_date": m.pubdate,
         },
     }
-    new, already = unique_dest(dest_for(action, library_dir), sha256)
+    new, _already = unique_dest(dest_for(action, library_dir), sha256)
     if new == old:
         return str(old)
 
-    if not already:
-        new.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(old), str(new))
-        # Journal the move the instant it has happened, before any of the
-        # bookkeeping below - if something after this raises (or the
-        # process dies), `reshelf rollback` must still have something to
-        # undo. Mirrors apply_plan's try/finally journal-on-partial-failure
-        # guarantee for a single action.
-        _write_journal(
-            cfg,
-            [{"action": "import", "src": str(old), "dest": str(new), "moved": True}],
-        )
-    # else: a byte-identical copy already sits at the derived name (e.g. an
-    # earlier rename that died before this point) - nothing to move.
+    # `_already` (a byte-identical copy of the original already sitting at
+    # the derived name - an earlier rename that died before the bookkeeping
+    # below) is deliberately not a special case: skipping the move used to
+    # repoint the sidecar at `new` and leave `old` behind with nothing
+    # describing it. shutil.move overwrites `new` with `old`, which is the
+    # copy this book's files[] actually names, so the leftover goes away
+    # and exactly one file is left holding the bytes.
+    new.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(old), str(new))
+    # Journal the move the instant it has happened, before any of the
+    # bookkeeping below - if something after this raises (or the process
+    # dies), `reshelf rollback` must still have something to undo. Mirrors
+    # apply_plan's try/finally journal-on-partial-failure guarantee for a
+    # single action.
+    _write_journal(
+        cfg,
+        [{"action": "import", "src": str(old), "dest": str(new), "moved": True}],
+    )
 
     def mutate(b: Book) -> None:
         for entry in b.files:
             if entry.path == old_entry.path:
                 entry.path = str(new)
 
-    book = store.update(sha256, mutate, str(new))
+    # The locator identifies the *document*, not where its bytes currently
+    # sit: under metadata.layout=sidecar|library, path_for() uses it to
+    # find the JSON, and the JSON did not move when the file did. Loading
+    # on row["path"] (above) and storing on str(new) looked for a sidecar
+    # that was never there - a KeyError raised *after* the move and the
+    # journal, leaving the file somewhere nothing recorded.
+    book = store.update(sha256, mutate, row["path"])
     index.sync(db.conn, book)
     return str(new)

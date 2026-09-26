@@ -101,6 +101,17 @@ def extract_cover(src: Path, dest: Path, max_edge: int = 600) -> bool:
     return False
 
 
+def has_cover(covers_dir: Path, sha256: str) -> bool:
+    """Both sizes, because both are asked for.
+
+    The grid requests `?size=thumb` and the detail view the full image, so
+    a `has_cover` that only checked one of them promises an <img> the
+    other endpoint 404s. ensure_cover can genuinely leave full-without-
+    thumb: it extracts the 600px image first and the 200px one after.
+    """
+    return cover_path(covers_dir, sha256).is_file() and thumb_path(covers_dir, sha256).is_file()
+
+
 def ensure_cover(covers_dir: Path, sha256: str, src: Path) -> bool:
     """Extract full (600px) and thumbnail (200px) covers unless both exist."""
     full, thumb = cover_path(covers_dir, sha256), thumb_path(covers_dir, sha256)

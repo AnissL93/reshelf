@@ -8,7 +8,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sse_starlette.sse import EventSourceResponse
 
 from reshelf.planner.committer import dest_for, unique_dest
-from reshelf.web.deps import AppState, get_state, resolve_inside_root
+from reshelf.paths import resolve_inside_root
+from reshelf.web.deps import AppState, get_state
 from reshelf.web.jobs import TERMINAL, UnknownCommand
 from reshelf.web.schemas import JobCreate
 

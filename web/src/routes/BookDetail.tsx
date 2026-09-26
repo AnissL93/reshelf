@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
-import type { BookDetail as BookDetailData, BookMetadata, FileEntry, WriteBack } from "../api";
+import type { BookDetail as BookDetailData, BookMetadata, WriteBack } from "../api";
 import {
   ApiError,
   chooseCandidate,
@@ -25,21 +25,6 @@ const STATUS_CLASS: Record<string, string> = {
   DUPLICATE: "muted",
   ERROR: "bad",
 };
-
-// Mirrors Book.primary_file() in store/models.py: converted first (readable
-// and metadata-writable), then a library copy, then whatever else is left.
-// Kept in sync with that ranking deliberately, not because either side
-// changes often - if the backend's ranking is ever revisited, this needs
-// the same change or the write-back tiers here start targeting the wrong
-// file.
-function primaryFormat(files: FileEntry[]): string | null {
-  if (files.length === 0) return null;
-  const rank = (f: FileEntry) => {
-    if (f.role === "converted") return 0;
-    return f.path.split("/").includes("library") ? 1 : 2;
-  };
-  return [...files].sort((a, b) => rank(a) - rank(b))[0].format;
-}
 
 // The metadata PATCH's only 422s all live inside the write-back "embed"
 // branch (see patch_metadata in books.py), which runs after the sidecar
@@ -181,7 +166,10 @@ export default function BookDetail() {
 
   const sidecar = book.sidecar;
   const meta = sidecar.metadata;
-  const format = primaryFormat(sidecar.files);
+  // Ranked server-side (books.get_book): only the backend knows the
+  // library root, and only with it can a library copy be told from an
+  // original under incoming/.
+  const format = book.primary_format;
   const convertTarget = caps?.convert[format ?? ""];
   const converterUnavailable = format !== null && caps?.converters_available[format] === false;
 
@@ -212,7 +200,7 @@ export default function BookDetail() {
         <ul className="file-list">
           {sidecar.files.map((f) => (
             <li key={f.path}>
-              <a href={fileUrl(sha, f.role === "original")}>{f.path}</a>{" "}
+              <a href={fileUrl(sha, f.path)}>{f.path}</a>{" "}
               <span className="muted">
                 ({f.role}, {f.format})
               </span>

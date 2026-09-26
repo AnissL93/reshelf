@@ -34,6 +34,9 @@ class BookDetail(BaseModel):
     paths: list[str] = []
     candidates: list[dict[str, Any]] = []
     has_cover: bool = False
+    # Resolved server-side (see books.get_book): the SPA has no library
+    # root and so cannot rank files[] correctly on its own.
+    primary_format: str | None = None
 
 
 class WriteBack(BaseModel):

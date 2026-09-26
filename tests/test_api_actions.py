@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from reshelf import pipeline
 from reshelf.metadata.models import Author, Candidate, Edition, Work
+from reshelf.store.sidecar import SidecarStore
 from reshelf.web.app import create_app
 from tests.test_api_metadata import SHA, build
 
@@ -311,3 +312,15 @@ def test_choose_refuses_a_candidate_that_belongs_to_a_different_book(tmp_path):
         detail = c.get(f"/api/books/{SHA}").json()
         assert detail["sidecar"]["source"]["resolver"] != "human"
         assert detail["sidecar"]["metadata"]["title"] == "Old Title"
+
+
+def test_convert_on_a_book_with_no_sidecar_is_404_not_a_doomed_job(tmp_path):
+    """Hashed but never extracted: convert_book's store.update raises
+    KeyError deep inside the worker, failing a job the user cannot act
+    on. Refuse it at the request instead."""
+    cfg, path = build(tmp_path, fmt="txt", status="MATCHED", location="incoming")
+    SidecarStore(cfg).path_for(SHA, str(path)).unlink()
+    with TestClient(create_app(tmp_path)) as c:
+        r = c.post(f"/api/books/{SHA}/convert")
+        assert r.status_code == 404
+        assert "extract" in r.json()["detail"]

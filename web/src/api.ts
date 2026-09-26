@@ -132,6 +132,11 @@ export type BookDetail = {
   paths: string[];
   candidates: Candidate[];
   has_cover: boolean;
+  /** Resolved server-side from files[] plus the library root. The SPA
+   * cannot rank files[] itself: telling a library copy from an original
+   * needs the root, and guessing at it mis-ranks every book as soon as
+   * the root is itself named "library". */
+  primary_format: string | null;
 };
 
 export type WriteBack = {
@@ -199,6 +204,10 @@ export type PlanAction = {
   file: string;
   action: "import" | "quarantine" | "mark_duplicate";
   dest?: string;
+  /** Whether the commit this preview was fetched for will actually perform
+   * this action. quarantine/mark_duplicate need flags the commit is not
+   * given, so they come back false and carry no `dest`. */
+  will_apply: boolean;
   metadata_changes?: Record<string, unknown>;
   [extra: string]: unknown;
 };
@@ -385,8 +394,13 @@ export function subscribeJob(id: number, onEvent: (job: Job) => void): () => voi
 
 // -- file / cover URLs (books.py; plain <img>/<a> src, not fetched via req) --
 
-export const fileUrl = (sha256: string, original = false) =>
-  `/api/books/${sha256}/file${original ? "?original=true" : ""}`;
+/** `path` names one specific files[] entry. The detail view lists them
+ * all, and a committed book has two whose role is "original" - the older
+ * `?original=true` could only ever serve the first of them, so clicking
+ * the `library/...` row downloaded the incoming copy. Omitted, the server
+ * serves the primary file. */
+export const fileUrl = (sha256: string, path?: string) =>
+  `/api/books/${sha256}/file${path ? `?path=${encodeURIComponent(path)}` : ""}`;
 
 export const coverUrl = (sha256: string, size: "thumb" | "full" = "full") =>
   `/api/books/${sha256}/cover?size=${size}`;

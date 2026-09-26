@@ -1,4 +1,6 @@
 import hashlib
+import json
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,8 +16,12 @@ from tests.helpers import make_epub
 SHA = "a" * 64
 
 
-def build(tmp_path, fmt="epub", status="COMMITTED", location="library"):
+def build(tmp_path, fmt="epub", status="COMMITTED", location="library", layout="hash"):
+    """`tmp_path` is the library root here - callers pass a subdirectory of
+    the real tmp_path when the root's own *name* is what is under test."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
     cfg = default_config(tmp_path)
+    cfg.metadata.layout = layout
     for sub in ("incoming", "library", "db", "metadata", "derived", "reports", "covers"):
         (tmp_path / sub).mkdir(parents=True, exist_ok=True)
     save_config(cfg, tmp_path)
@@ -32,7 +38,7 @@ def build(tmp_path, fmt="epub", status="COMMITTED", location="library"):
     book = Book(sha256=SHA, files=[FileEntry(path=str(path), format=fmt)])
     book.metadata.title = "Old Title"
     book.metadata.authors = ["Old Author"]
-    store.save(book)
+    store.save(book, str(path))
     db.conn.execute(
         "INSERT INTO files (path, sha256, format, status) VALUES (?,?,?,?)",
         (str(path), SHA, fmt, status),
@@ -160,3 +166,101 @@ def test_rename_on_an_uncommitted_book_warns_instead_of_failing(tmp_path):
 def test_patch_on_an_unknown_book_is_404(client):
     r = client.patch("/api/books/" + "f" * 64 + "/metadata", json=PATCH)
     assert r.status_code == 404
+
+
+# -- C1: the guard that keeps tier 3 off an original -----------------------
+
+
+def test_embed_never_reaches_an_original_when_the_library_root_is_named_library(
+    tmp_path,
+):
+    """A root literally called `library` - /mnt/d/library, ~/library.
+
+    Every path under it then has "library" as a path component, so a bare
+    `"library" in Path(p).parts` test calls the incoming original a
+    library copy, lets tier 3 through, and rewrites (and re-hashes) the
+    user's source file. Spec invariant 4: book bytes in incoming/ are
+    never rewritten.
+    """
+    root = tmp_path / "library"
+    _cfg, path = build(root, status="MATCHED", location="incoming")
+    assert "library" in path.parts  # the trap this test exists for
+    before = hashlib.sha256(path.read_bytes()).digest()
+
+    with TestClient(create_app(root)) as c:
+        r = c.patch(
+            f"/api/books/{SHA}/metadata",
+            json={**PATCH, "write_back": {"embed": True}},
+        )
+        assert r.status_code == 422
+        assert r.json()["detail"]["reason"] == "not_in_library"
+    assert hashlib.sha256(path.read_bytes()).digest() == before
+
+
+def test_a_real_library_copy_under_a_library_root_still_embeds(tmp_path):
+    """The other half of C1: the guard must not now refuse everything."""
+    from reshelf.extractors.epub import extract_epub
+
+    root = tmp_path / "library"
+    build(root, location="library")
+    with TestClient(create_app(root)) as c:
+        body = c.patch(
+            f"/api/books/{SHA}/metadata",
+            json={**PATCH, "write_back": {"embed": True}},
+        ).json()
+        assert body["embedded"] is True
+    assert extract_epub(root / "library" / "Old Title.epub").title == "New Title"
+
+
+def test_detail_reports_the_primary_format_resolved_against_the_real_root(tmp_path):
+    root = tmp_path / "library"
+    build(root, status="MATCHED", location="incoming")
+    with TestClient(create_app(root)) as c:
+        assert c.get(f"/api/books/{SHA}").json()["primary_format"] == "epub"
+
+
+def test_embed_on_a_file_deleted_out_of_band_is_422_not_500(tmp_path):
+    """files[] is user-editable JSON and the file it names can vanish."""
+    _cfg, path = build(tmp_path)
+    path.unlink()
+    with TestClient(create_app(tmp_path)) as c:
+        r = c.patch(
+            f"/api/books/{SHA}/metadata",
+            json={**PATCH, "write_back": {"embed": True}},
+        )
+        assert r.status_code == 422
+        assert r.json()["detail"]["reason"] == "file_missing"
+        # tier 1 still landed
+        detail = c.get(f"/api/books/{SHA}").json()
+        assert detail["sidecar"]["metadata"]["title"] == "New Title"
+
+
+# -- C2: one sidecar locator, kept on the original -------------------------
+
+
+def test_library_rename_under_a_sidecar_layout_does_not_lose_the_book(tmp_path):
+    """The tier-2 crash: the sidecar is loaded keyed on row["path"] and
+    stored keyed on the new library path. Under metadata.layout=sidecar
+    those are different files, so store.update raised KeyError *after*
+    shutil.move and the journal write had already run - the file ended up
+    somewhere nothing recorded, and the user saw a 500.
+    """
+    _cfg, path = build(tmp_path, layout="sidecar")
+    with TestClient(create_app(tmp_path)) as c:
+        r = c.patch(
+            f"/api/books/{SHA}/metadata",
+            json={**PATCH, "write_back": {"library_file": True}},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        new_path = body["library_file"]
+        assert new_path is not None and "New Title" in new_path
+        assert Path(new_path).exists()
+        assert not path.exists()
+        # The sidecar is still where it always was, beside the old path,
+        # and now names where the bytes actually are.
+        sidecar = json.loads(Path(str(path) + ".json").read_text())
+        assert [f["path"] for f in sidecar["files"]] == [new_path]
+        # ...and the response round-trips through the same locator.
+        assert [f["path"] for f in body["sidecar"]["files"]] == [new_path]
+        assert c.get(f"/api/books/{SHA}/file").status_code == 200

@@ -37,7 +37,14 @@ class SidecarStore:
         return p.with_name(p.name + ".json")
 
     def load(self, sha256: str, file_path: str | None = None) -> Book | None:
-        path = self.path_for(sha256, file_path)
+        try:
+            path = self.path_for(sha256, file_path)
+        except ValueError:
+            # A non-hash layout with no file to key on (a hashed row whose
+            # `files` rows are gone, say). There is no sidecar to find, and
+            # every caller of load() already handles None - raising here
+            # instead turned "not found" into a 500.
+            return None
         if not path.exists():
             return None
         return Book.model_validate(json.loads(path.read_text(encoding="utf-8")))

@@ -23,11 +23,16 @@ def _require_book(state: AppState, sha256: str):
 def convert(sha256: str, state: AppState = Depends(get_state)) -> dict:
     row = _require_book(state, sha256)
     book = state.store.load(sha256, row["path"])
+    if book is None:
+        # Hashed but never extracted: convert_book's store.update would
+        # raise KeyError deep inside the worker, failing a job the user
+        # cannot act on. Say so now instead.
+        raise HTTPException(404, "no sidecar for this book yet; run extract first")
     # Mirrors convert_book's own source selection: the book's ORIGINAL file,
     # not whatever the primary file is now (a book already converted has an
     # EPUB primary, which must not make a second attempt look valid/invalid
     # for the wrong reason).
-    source = next((f for f in (book.files if book else []) if f.role == "original"), None)
+    source = next((f for f in book.files if f.role == "original"), None)
     fmt = (source.format if source else row["format"]) or ""
     if converters.target_format(fmt) is None:
         raise HTTPException(409, f"{fmt or 'this format'} needs no conversion")

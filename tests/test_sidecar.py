@@ -3,6 +3,7 @@ import json
 import pytest
 
 from reshelf.config import default_config
+from reshelf.paths import under
 from reshelf.store.models import Book, FileEntry
 from reshelf.store.sidecar import SidecarStore
 
@@ -129,14 +130,43 @@ def test_primary_file_prefers_a_converted_file(tmp_path):
 
 
 def test_primary_file_prefers_library_over_incoming(tmp_path):
+    root = tmp_path / "books"
     book = Book(
         sha256=SHA,
         files=[
-            FileEntry(path="incoming/x.epub", format="epub"),
-            FileEntry(path="library/A/x.epub", format="epub"),
+            FileEntry(path=str(root / "incoming/x.epub"), format="epub"),
+            FileEntry(path=str(root / "library/A/x.epub"), format="epub"),
         ],
     )
-    assert book.primary_file().path == "library/A/x.epub"
+    assert book.primary_file(root / "library").path == str(root / "library/A/x.epub")
+
+
+def test_primary_file_ranks_nothing_as_library_without_a_library_dir(tmp_path):
+    """No root in hand (index.sync) means no library tier - not a guess."""
+    root = tmp_path / "books"
+    book = Book(
+        sha256=SHA,
+        files=[
+            FileEntry(path=str(root / "incoming/x.epub"), format="epub"),
+            FileEntry(path=str(root / "library/A/x.epub"), format="epub"),
+        ],
+    )
+    assert book.primary_file().path == str(root / "incoming/x.epub")
+
+
+def test_primary_file_does_not_call_an_original_a_library_copy_under_a_library_root(
+    tmp_path,
+):
+    """The C1 shape: a library root literally named `library`.
+
+    Every path then has "library" as a component, so the old component
+    test called the incoming original a library copy.
+    """
+    root = tmp_path / "library"
+    incoming = FileEntry(path=str(root / "incoming/x.epub"), format="epub")
+    book = Book(sha256=SHA, files=[incoming])
+    assert book.primary_file(root / "library") is incoming
+    assert not under(incoming.path, root / "library")
 
 
 def test_update_applies_the_mutation_and_bumps_updated_at(tmp_path):
@@ -172,7 +202,8 @@ def test_corrupt_sidecars_are_skipped_with_warning(tmp_path, caplog):
 
 
 def test_primary_file_does_not_false_positive_on_directory_name_with_library(tmp_path):
-    """Absolute paths containing 'library' as substring should not be ranked as library copies."""
+    """A 'library' substring in some other directory is not a library copy."""
+    root = tmp_path / "books"
     book = Book(
         sha256=SHA,
         files=[
@@ -181,17 +212,17 @@ def test_primary_file_does_not_false_positive_on_directory_name_with_library(tmp
         ],
     )
     # Converted file should win, not the one with 'library' in the absolute path
-    assert book.primary_file().path == "/tmp/other/derived/x.epub"
+    assert book.primary_file(root / "library").path == "/tmp/other/derived/x.epub"
 
 
 def test_primary_file_correctly_ranks_real_library_path(tmp_path):
-    """Paths with 'library' as an actual path segment should be ranked as library copies."""
+    """A file genuinely inside <root>/library outranks one that is not."""
+    root = tmp_path / "books"
     book = Book(
         sha256=SHA,
         files=[
-            FileEntry(path="incoming/x.epub", format="epub"),
-            FileEntry(path="/srv/books/library/A/x.epub", format="epub"),
+            FileEntry(path=str(root / "incoming/x.epub"), format="epub"),
+            FileEntry(path=str(root / "library/A/x.epub"), format="epub"),
         ],
     )
-    # Real library path should win over incoming
-    assert book.primary_file().path == "/srv/books/library/A/x.epub"
+    assert book.primary_file(root / "library").path == str(root / "library/A/x.epub")

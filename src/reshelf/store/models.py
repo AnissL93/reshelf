@@ -11,6 +11,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from reshelf.paths import under
+
 _EXTRA = ConfigDict(extra="allow", populate_by_name=True)
 
 
@@ -84,14 +86,22 @@ class Book(BaseModel):
         """A human decision is sticky - match and resolve must not overwrite it."""
         return self.source.resolver == "human"
 
-    def primary_file(self) -> FileEntry | None:
-        """Converted first (readable and metadata-writable), then library, then the rest."""
+    def primary_file(self, library_dir: Path | None = None) -> FileEntry | None:
+        """Converted first (readable and metadata-writable), then library, then the rest.
+
+        `library_dir` is `<root>/library`; without it the library tier
+        simply doesn't apply (converted-first still does). It is a real
+        containment check, not a `"library" in parts` component match -
+        that one calls every file a library copy as soon as the user's
+        root is itself named `library`, which is exactly what let tier-3
+        embedding reach an original under `incoming/`.
+        """
         if not self.files:
             return None
 
         def rank(f: FileEntry) -> int:
             if f.role == "converted":
                 return 0
-            return 1 if "library" in Path(f.path).parts else 2
+            return 1 if under(f.path, library_dir) else 2
 
         return sorted(self.files, key=rank)[0]

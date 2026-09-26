@@ -1,5 +1,6 @@
 import hashlib
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -190,4 +191,101 @@ def test_rename_library_copy_journal_round_trips_through_rollback(tmp_path):
     assert library_path.exists()
     assert not Path(new_path).exists()
     assert src.exists()  # untouched throughout
+    db.close()
+
+
+def test_rename_collapses_a_leftover_copy_at_the_destination(tmp_path):
+    """unique_dest says "already": a byte-identical copy is sitting at the
+    derived name, from an earlier rename that died before its bookkeeping.
+
+    Skipping the move and repointing the sidecar anyway left `old` on disk
+    with nothing describing it - an orphan in the library that no sidecar,
+    no index row and no journal mentions. There must be exactly one file
+    afterwards, and a journal describing how it got there.
+    """
+    cfg, sha256, src, library_path = _commit_one_book(tmp_path)
+    store = SidecarStore(cfg)
+    store.update(sha256, lambda b: setattr(b.metadata, "title", "New Title"), str(src))
+
+    # Pre-create the destination with the same bytes: exactly what a
+    # crashed earlier rename leaves behind.
+    dest = (
+        Path(cfg.library.root)
+        / "library"
+        / "Liu Cixin"
+        / "New Title (2014)"
+        / "New Title.epub"
+    )
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(library_path, dest)
+
+    db = Database(cfg.database.path)
+    new_path = rename_library_copy(cfg, db, store, sha256)
+
+    assert new_path == str(dest)
+    assert dest.exists()
+    assert not library_path.exists()  # no orphan left behind
+    assert sorted(p.name for p in (Path(cfg.library.root) / "library").rglob("*.epub")) == [
+        "New Title.epub"
+    ]
+    book = store.load(sha256, str(src))
+    assert sorted(f.path for f in book.files) == sorted([str(src), str(dest)])
+    assert src.exists()
+    db.close()
+
+
+def test_rename_under_a_sidecar_layout_keeps_the_original_as_the_locator(tmp_path):
+    """C2 at the writeback layer: load and store must use the same key.
+
+    Loading on row["path"] and storing on the new library path asks a
+    sidecar|library layout for a JSON file that does not exist -
+    store.update raises KeyError *after* shutil.move and _write_journal,
+    leaving the file under a name nothing records.
+    """
+    from reshelf.config import default_config, save_config
+    from reshelf.store.models import Book, FileEntry
+
+    root = tmp_path
+    (root / "incoming").mkdir(parents=True)
+    library_path = root / "library" / "Old Author" / "Old Title" / "Old Title.epub"
+    library_path.parent.mkdir(parents=True)
+    src = root / "incoming" / "old.epub"
+    make_epub(src, "Old Title", "Old Author")
+    shutil.copy2(src, library_path)
+
+    cfg = default_config(root)
+    cfg.metadata.layout = "sidecar"
+    save_config(cfg, root)
+    sha256 = hashlib.sha256(src.read_bytes()).hexdigest()
+
+    db = Database(cfg.database.path)
+    db.init_schema()
+    db.conn.execute(
+        "INSERT INTO files (path, sha256, format, status)"
+        " VALUES (?,?,'epub','COMMITTED')",
+        (str(src), sha256),
+    )
+    db.conn.commit()
+
+    store = SidecarStore(cfg)
+    book = Book(
+        sha256=sha256,
+        files=[
+            FileEntry(path=str(src), format="epub"),
+            FileEntry(path=str(library_path), format="epub"),
+        ],
+    )
+    book.metadata.title = "New Title"
+    book.metadata.authors = ["New Author"]
+    store.save(book, str(src))
+
+    new_path = rename_library_copy(cfg, db, store, sha256)
+
+    assert new_path is not None and "New Title" in new_path
+    assert Path(new_path).exists()
+    assert not library_path.exists()
+    # The sidecar never moved; it is still keyed on the incoming original.
+    assert Path(str(src) + ".json").exists()
+    reloaded = store.load(sha256, str(src))
+    assert sorted(f.path for f in reloaded.files) == sorted([str(src), new_path])
     db.close()
