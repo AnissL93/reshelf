@@ -42,6 +42,10 @@ export default function Reader() {
   // or nothing), which must never be written over the user's saved one.
   const [ready, setReady] = useState(false);
   const readyRef = useRef(false);
+  // Set when a saved position exists that this open did not restore. Writes
+  // stay blocked until locate() moves off this value, i.e. until the user
+  // actually reads; merely opening the other format must not destroy it.
+  const baselineRef = useRef<string | null>(null);
 
   const hostRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<Engine | null>(null);
@@ -73,9 +77,19 @@ export default function Reader() {
   // -- reading progress -------------------------------------------------
   useEffect(() => {
     if (!fileEngine) return;
+    // The one gate for both writers.
+    const writable = (engine: Engine | null): engine is Engine => {
+      if (!engine) return false;
+      if (!readyRef.current) {
+        const base = baselineRef.current;
+        if (base === null || engine.locate().locator === base) return false;
+        readyRef.current = true; // the user moved: normal writes resume
+      }
+      return true;
+    };
     const tick = () => {
       const engine = engineRef.current;
-      if (!engine || !readyRef.current) return;
+      if (!writable(engine)) return;
       const loc = engine.locate();
       const now = Date.now();
       if (now - lastWrite.current < PROGRESS_MS) return;
@@ -89,7 +103,7 @@ export default function Reader() {
       const engine = engineRef.current;
       // fetch() is cancelled on unload; sendBeacon is the only delivery
       // the browser guarantees.
-      if (!engine || !readyRef.current) return;
+      if (!writable(engine)) return;
       const loc = engine.locate();
       if (loc.locator) beaconReading(sha, loc);
     };
@@ -110,6 +124,7 @@ export default function Reader() {
     if (engine instanceof EpubEngine) engine.setFontSize(sizeRef.current);
     engineRef.current = engine;
     readyRef.current = false;
+    baselineRef.current = null;
     let cancelled = false;
 
     engine
@@ -138,7 +153,15 @@ export default function Reader() {
           }
         }
         if (cancelled) return;
-        readyRef.current = true;
+        // Nothing saved: progress may be written from the first tick.
+        // Saved but not restored (other engine's locator), or EPUB, whose
+        // relocate may land after goTo resolves: hold writes until the
+        // position moves off what it is now.
+        if (stored && (!target || fileEngine === "epub")) {
+          baselineRef.current = engine.locate().locator;
+        } else {
+          readyRef.current = true;
+        }
         setReady(true);
         if (engine instanceof PdfEngine) engine.setAreaMode(areaRef.current);
         // Annotations may have loaded before the engine was ready.

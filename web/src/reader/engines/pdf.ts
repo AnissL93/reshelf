@@ -419,7 +419,14 @@ export class PdfEngine implements Engine {
 
   async goTo(anchor: Anchor): Promise<void> {
     const page = "page" in anchor ? anchor.page : 1;
-    this.views.get(page)?.wrapper.scrollIntoView({ behavior: "smooth", block: "start" });
+    const view = this.views.get(page);
+    if (!view) return;
+    // Set synchronously: the scroll observer only confirms it later, and a
+    // progress write in between must see the destination, not page 1.
+    this.current = page;
+    // Instant, not smooth: a smooth scroll to page 200 passes through every
+    // page in between and current would follow it.
+    view.wrapper.scrollIntoView({ behavior: "auto", block: "start" });
   }
 
   locate(): Locator {
