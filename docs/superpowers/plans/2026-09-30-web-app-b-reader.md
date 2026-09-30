@@ -137,7 +137,7 @@ Create `tests/test_annotations.py`:
 ```python
 import json
 
-from reshelf.store.models import Annotation, Book, FileEntry
+from reshelf.store.models import Annotation, Book
 
 SHA = "a" * 64
 
@@ -408,8 +408,8 @@ def test_set_reading_persists(store):
     assert store.load(SHA).reading.locator == "page=42"
 ```
 
-Add `Book, FileEntry` to the existing `from reshelf.store.models import ...`
-line at the top of the file.
+Add `FileEntry` to the existing `from reshelf.store.models import ...` line
+at the top of the file.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -724,9 +724,6 @@ from pydantic import BaseModel, Field
 and append:
 
 ```python
-COLORS = ("yellow", "green", "blue", "pink")
-
-
 class AnnotationCreate(BaseModel):
     """`id`, `created_at` and `updated_at` are assigned server-side. They
     are absent from this model on purpose: a client that sends one gets
@@ -1118,6 +1115,14 @@ Add to `web/package.json` scripts:
 "test": "vitest run"
 ```
 
+`vitest.config.ts` sits outside `src/`, so add it to
+`web/tsconfig.node.json`'s include list beside `vite.config.ts` -
+otherwise `tsc -b` never looks at it:
+
+```json
+  "include": ["vite.config.ts", "vitest.config.ts"]
+```
+
 - [ ] **Step 3: Write the types and the colour table**
 
 Create `web/src/reader/colors.ts`:
@@ -1217,7 +1222,7 @@ Create `web/src/reader/anchors.test.ts`:
 ```ts
 import { describe, expect, it } from "vitest";
 import { denormalizeRect, mergeRects, normalizeRect } from "./anchors";
-import type { PageBox } from "./engines/types";
+import type { NormRect, PageBox } from "./engines/types";
 
 const A4: PageBox = { width: 600, height: 800, rotation: 0 };
 
@@ -1242,6 +1247,15 @@ describe("normalizeRect", () => {
   });
 
   // [RF-2] Scans are often stored sideways.
+  // [RF-2] The round-trip below is symmetric and would pass even with the
+  // axes swapped the wrong way, so assert the swap itself first.
+  it("measures a 90-degree page against its swapped axes", () => {
+    const sideways: PageBox = { width: 600, height: 800, rotation: 90 };
+    // Displayed, a /Rotate 90 page is 800 wide and 600 tall.
+    expect(normalizeRect({ x: 400, y: 300, width: 80, height: 60 }, sideways))
+      .toEqual([0.5, 0.5, 0.1, 0.1]);
+  });
+
   it("round-trips on a rotated page", () => {
     for (const rotation of [90, 180, 270] as const) {
       const page: PageBox = { width: 600, height: 800, rotation };
@@ -1289,6 +1303,19 @@ describe("mergeRects", () => {
 
   it("returns an empty array unchanged", () => {
     expect(mergeRects([])).toEqual([]);
+  });
+
+  // The engines call paint() repeatedly with the same annotation objects.
+  // Merging in place would rewrite the stored anchor a little more on
+  // every repaint until the highlight no longer matches what was saved.
+  it("does not mutate the rects it was given", () => {
+    const rects: NormRect[] = [
+      [0.1, 0.2, 0.3, 0.02],
+      [0.4, 0.2, 0.2, 0.02],
+    ];
+    const snapshot = structuredClone(rects);
+    mergeRects(rects);
+    expect(rects).toEqual(snapshot);
   });
 });
 ```
@@ -1358,7 +1385,11 @@ export function denormalizeRect(rect: NormRect, page: PageBox): PixelRect {
  * line keeps a sentence from being drawn as a row of separate boxes. */
 export function mergeRects(rects: NormRect[]): NormRect[] {
   if (rects.length === 0) return [];
-  const sorted = [...rects].sort((a, b) => a[1] - b[1] || a[0] - b[0]);
+  // Copy each tuple, not just the outer array: `[...rects]` shares the
+  // tuples with the caller, and the merge below writes through them.
+  const sorted = rects
+    .map((r) => [...r] as NormRect)
+    .sort((a, b) => a[1] - b[1] || a[0] - b[0]);
   const out: NormRect[] = [sorted[0]];
   for (const rect of sorted.slice(1)) {
     const last = out[out.length - 1];
@@ -1461,11 +1492,18 @@ export class PdfEngine implements Engine {
   private views = new Map<number, PageView>();
   private annotations: Annotation[] = [];
   private current = 1;
-  private scale = 1.4;
+  private scale: number;
   private areaMode = false;
   private onText: ((a: Anchor, t: string) => void) | null = null;
   private onArea: ((a: Anchor) => void) | null = null;
   private cleanup: (() => void)[] = [];
+
+  /** The shell owns the zoom level, so it is passed in rather than
+   * defaulted here - otherwise the first zoom click jumps from the
+   * engine's private default to the shell's. */
+  constructor(scale = 1.4) {
+    this.scale = scale;
+  }
 
   async mount(host: HTMLElement, fileUrl: string): Promise<void> {
     this.host = host;
@@ -1520,11 +1558,13 @@ export class PdfEngine implements Engine {
     // not a case to special-case.
     const textDiv = document.createElement("div");
     textDiv.className = "textLayer";
-    Object.assign(textDiv.style, {
-      position: "absolute", inset: "0",
-      // pdf.js positions its spans in this space.
-      "--scale-factor": String(this.scale),
-    } as Partial<CSSStyleDeclaration>);
+    textDiv.style.position = "absolute";
+    textDiv.style.inset = "0";
+    // setProperty, not Object.assign: assigning a custom property onto
+    // the style object writes an ordinary JS property that never reaches
+    // CSS, leaving pdf.js's spans laid out at scale 1 over a canvas
+    // rendered at `this.scale` - every selection off by the zoom factor.
+    textDiv.style.setProperty("--scale-factor", String(this.scale));
     wrapper.append(textDiv);
     const textContent = await page.getTextContent();
     if (textContent.items.length) {
@@ -1777,7 +1817,8 @@ git commit -m "feat(reader): pdf.js engine with area and text highlights"
 - Consumes: `Engine`, `Anchor`, `Annotation`, `Locator` from `./types`;
   `COLORS` from `./pdf`.
 - Produces: `class EpubEngine implements Engine` with
-  `supportsArea = false`.
+  `supportsArea = false`, plus `setFontSize(px: number)` - the EPUB half
+  of the spec's toolbar sizing control (the PDF half is `PdfEngine.setScale`).
 
 **Why vendored:** the `foliate-js` npm package is published by a third
 party, not the author, has one version from April 2025, and ships only a
@@ -1872,7 +1913,7 @@ Create `web/src/reader/engines/epub.ts`:
 // EPUB is reflowable: there is no page geometry to draw a box on, so
 // supportsArea is false and the shell hides the area tool. Anchors are
 // CFIs, which foliate-js generates from a Range and resolves back to one.
-import { BlobReader, ZipReader } from "@zip.js/zip.js";
+import { BlobReader, BlobWriter, TextWriter, ZipReader } from "@zip.js/zip.js";
 import { FILL } from "../colors";
 import type { Anchor, Annotation, Engine, Locator } from "./types";
 
@@ -1883,7 +1924,9 @@ import "../../../vendor/foliate-js/view.js";
 // @ts-expect-error - vendored plain ESM.
 import { Overlayer } from "../../../vendor/foliate-js/overlayer.js";
 
-/** foliate-js's EPUB loader wants entry lookup by name, not a zip object. */
+/** foliate-js's EPUB loader wants entry lookup by name, not a zip object.
+ * Confirm the exact shape against upstream's own demo during Step 2's
+ * probe - this is the part of the file most likely to need adjusting. */
 async function zipLoader(blob: Blob) {
   const reader = new ZipReader(new BlobReader(blob));
   const entries = new Map(
@@ -1892,9 +1935,9 @@ async function zipLoader(blob: Blob) {
   return {
     entries: [...entries.values()],
     loadText: async (name: string) =>
-      entries.get(name)?.getData?.(new (await import("@zip.js/zip.js")).TextWriter()),
+      entries.get(name)?.getData?.(new TextWriter()),
     loadBlob: async (name: string) =>
-      entries.get(name)?.getData?.(new (await import("@zip.js/zip.js")).BlobWriter()),
+      entries.get(name)?.getData?.(new BlobWriter()),
     getSize: (name: string) => entries.get(name)?.uncompressedSize ?? 0,
   };
 }
@@ -1904,7 +1947,10 @@ type FoliateView = HTMLElement & {
   goTo(target: string): Promise<void>;
   addAnnotation(a: { value: string }): void;
   deleteAnnotation(a: { value: string }): void;
-  renderer: { getContents(): { doc: Document }[] };
+  renderer: {
+    getContents(): { doc: Document }[];
+    setStyles?(css: string): void;
+  };
   addEventListener(t: string, cb: (e: CustomEvent) => void): void;
 };
 
@@ -1984,6 +2030,15 @@ export class EpubEngine implements Engine {
 
   async goTo(anchor: Anchor): Promise<void> {
     if (anchor.kind === "epub") await this.view?.goTo(anchor.cfi);
+  }
+
+  /** Reflowable text resizes rather than zooming, so this is the EPUB
+   * counterpart to PdfEngine.setScale. foliate-js re-paginates and
+   * re-emits `relocate`, so the stored CFI stays valid across a change. */
+  setFontSize(px: number): void {
+    this.view?.renderer.setStyles?.(`
+      html, body { font-size: ${px}px; }
+    `);
   }
 
   locate(): Locator {
@@ -2309,8 +2364,8 @@ function where(ann: Annotation): string {
   if (typeof anchor.page === "number") return `p.${anchor.page}`;
   if (anchor.kind === "epub") return "location";
   // A kind this build does not know. Listed, not hidden - it is the
-  // user's data and the next version may understand it.
-  return anchor.kind;
+  // user's data and the next version may understand it (spec section 7).
+  return "unsupported in this version";
 }
 
 function quoted(ann: Annotation): string | null {
@@ -2354,7 +2409,9 @@ export default function Sidebar({
               >
                 {ann.type === "bookmark" ? "⚑" : ""}
               </span>
-              <span className="where">{where(ann)}</span>
+              <span className="where" title={(ann.anchor as { kind: string }).kind}>
+                {where(ann)}
+              </span>
               {quoted(ann) && <q className="quote">{quoted(ann)}</q>}
             </button>
 
@@ -2539,6 +2596,9 @@ export default function Reader() {
   const [error, setError] = useState<string | null>(null);
   const [color, setColor] = useState<AnnotationColor>("yellow");
   const [areaMode, setAreaMode] = useState(false);
+  // One control, two meanings: a PDF zooms, reflowable EPUB text resizes.
+  const [zoom, setZoom] = useState(1.4);
+  const [fontSize, setFontSize] = useState(16);
 
   const hostRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<Engine | null>(null);
@@ -2559,7 +2619,7 @@ export default function Reader() {
   useEffect(() => {
     const host = hostRef.current;
     if (!host || !file?.engine || !book) return;
-    const engine: Engine = file.engine === "pdf" ? new PdfEngine() : new EpubEngine();
+    const engine: Engine = file.engine === "pdf" ? new PdfEngine(zoom) : new EpubEngine();
     engineRef.current = engine;
 
     engine.onTextSelect((anchor) => create(anchor, "highlight", color));
@@ -2583,9 +2643,10 @@ export default function Reader() {
       engine.destroy();
       engineRef.current = null;
     };
-    // `color` is read inside the callbacks via the ref-free closure below;
-    // remounting the engine when the colour changes would reload the file.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Deliberately narrow: this effect loads the file, so it must re-run
+    // only when the file changes. `create` and `color` are rebound by the
+    // effect below instead - listing them here would re-download the book
+    // every time the user picked a different highlight colour.
   }, [sha, file?.file_sha, file?.engine, book?.sha256]);
 
   // The selection callbacks close over `color` from mount time, so rebind
@@ -2606,6 +2667,20 @@ export default function Reader() {
       engineRef.current.setAreaMode(areaMode);
     }
   }, [areaMode]);
+
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (engine instanceof PdfEngine) {
+      // Re-renders every page, so never on the first mount - the engine
+      // already rendered at this scale.
+      void engine.setScale(zoom).then(() => engine.paint(annotations));
+    } else if (engine instanceof EpubEngine) {
+      engine.setFontSize(fontSize);
+    }
+    // Deliberately excludes `annotations`: the effect above already
+    // repaints when they change, and re-running this one would re-render
+    // every page of the PDF each time a note was edited.
+  }, [zoom, fontSize]);
 
   // -- reading progress -------------------------------------------------
   useEffect(() => {
@@ -2687,6 +2762,28 @@ export default function Reader() {
                 Area
               </button>
             )}
+            {file.engine === "pdf" ? (
+              <span className="sizing">
+                <button onClick={() => setZoom((z) => Math.max(0.5, z - 0.2))}>
+                  &minus;
+                </button>
+                <span>{Math.round(zoom * 100)}%</span>
+                <button onClick={() => setZoom((z) => Math.min(4, z + 0.2))}>
+                  +
+                </button>
+              </span>
+            ) : (
+              <span className="sizing">
+                <button onClick={() => setFontSize((f) => Math.max(10, f - 2))}>
+                  A&minus;
+                </button>
+                <span>{fontSize}px</span>
+                <button onClick={() => setFontSize((f) => Math.min(32, f + 2))}>
+                  A+
+                </button>
+              </span>
+            )}
+
             <button
               onClick={() => {
                 const engine = engineRef.current;
@@ -2755,6 +2852,7 @@ Append to the project's existing stylesheet (`web/src/styles.css`):
 .reader-sidebar .jump { display: flex; gap: .4rem; align-items: baseline; width: 100%; text-align: left; background: none; border: 0; cursor: pointer; }
 .reader-sidebar .swatch { display: inline-block; width: 1rem; height: 1rem; border-radius: 2px; }
 .reader-sidebar .quote { font-style: italic; color: #444; }
+.reader-toolbar .sizing { display: inline-flex; gap: .25rem; align-items: center; }
 .swatch-button { width: 1.25rem; height: 1.25rem; border: 1px solid #999; border-radius: 3px; cursor: pointer; }
 .swatch-button.on { outline: 2px solid #222; }
 .reader-notice { flex: 1; display: grid; place-content: center; gap: .75rem; text-align: center; }
