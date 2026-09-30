@@ -1,6 +1,12 @@
 import json
+import threading
 
-from reshelf.store.models import Annotation, Book
+import pytest
+
+from reshelf import annotations as anns
+from reshelf.config import default_config, save_config
+from reshelf.store.models import Annotation, Book, FileEntry
+from reshelf.store.sidecar import SidecarStore
 
 SHA = "a" * 64
 
@@ -64,3 +70,84 @@ def test_a_malformed_annotation_entry_is_dropped_not_fatal(caplog):
     })
     assert [a.id for a in book.annotations] == ["good"]
     assert "annotation" in caplog.text.lower()
+
+
+ANCHOR = {"kind": "pdf-area", "page": 1, "rect": [0.1, 0.1, 0.2, 0.2]}
+OTHER_SHA = "b" * 64
+
+
+@pytest.fixture
+def store(tmp_path):
+    cfg = default_config(tmp_path)
+    for sub in ("metadata", "db"):
+        (tmp_path / sub).mkdir(parents=True, exist_ok=True)
+    save_config(cfg, tmp_path)
+    s = SidecarStore(cfg)
+    s.save(Book(sha256=SHA, files=[FileEntry(path=str(tmp_path / "x.pdf"), format="pdf")]))
+    return s
+
+
+def test_add_assigns_an_id_and_timestamps(store):
+    ann = anns.add(store, SHA, type="highlight", file_sha=SHA, anchor=ANCHOR)
+    assert len(ann.id) == 32
+    assert ann.created_at and ann.updated_at
+    assert store.load(SHA).annotations[0].id == ann.id
+
+
+def test_add_then_patch_then_remove(store):
+    ann = anns.add(store, SHA, type="highlight", file_sha=SHA, anchor=ANCHOR)
+    patched = anns.patch(store, SHA, ann.id, note="hello", color="green")
+    assert (patched.note, patched.color) == ("hello", "green")
+    assert patched.anchor == ANCHOR
+    anns.remove(store, SHA, ann.id)
+    assert store.load(SHA).annotations == []
+
+
+def test_patch_does_not_touch_created_at(store):
+    ann = anns.add(store, SHA, type="highlight", file_sha=SHA, anchor=ANCHOR)
+    patched = anns.patch(store, SHA, ann.id, note="x")
+    assert patched.created_at == ann.created_at
+
+
+def test_patch_and_remove_raise_on_an_unknown_id(store):
+    with pytest.raises(anns.UnknownAnnotation):
+        anns.patch(store, SHA, "nope", note="x")
+    with pytest.raises(anns.UnknownAnnotation):
+        anns.remove(store, SHA, "nope")
+
+
+def test_list_for_filters_by_file_sha(store):
+    a = anns.add(store, SHA, type="highlight", file_sha=SHA, anchor=ANCHOR)
+    b = anns.add(store, SHA, type="highlight", file_sha=OTHER_SHA, anchor=ANCHOR)
+    book = store.load(SHA)
+    assert [x.id for x in anns.list_for(book, SHA)] == [a.id]
+    assert [x.id for x in anns.list_for(book, OTHER_SHA)] == [b.id]
+    assert len(anns.list_for(book)) == 2
+
+
+def test_concurrent_adds_all_land(store):
+    """Two tabs annotating one book. Mutating inside update()'s callback
+    is what makes this safe; building a list in the caller and writing it
+    back would lose one of these."""
+    errors = []
+
+    def go(i):
+        try:
+            anns.add(store, SHA, type="highlight", file_sha=SHA,
+                     anchor={**ANCHOR, "page": i})
+        except Exception as exc:  # noqa: BLE001 - reported below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=go, args=(i,)) for i in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+    assert len(store.load(SHA).annotations) == 20
+
+
+def test_set_reading_persists(store):
+    reading = anns.set_reading(store, SHA, "page=42", 0.37)
+    assert reading.percent == 0.37
+    assert store.load(SHA).reading.locator == "page=42"
