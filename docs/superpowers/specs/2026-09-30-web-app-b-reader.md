@@ -119,14 +119,38 @@ file is replaced. `pdf-area` has no text by construction.
 
 ### 3.1 Durability
 
-- **`epub` anchors** re-anchor by CFI, and by searching `text` if the
-  CFI no longer resolves.
-- **`pdf-text` anchors** re-anchor by page and rects, and by searching
-  `text` on that page if the rects land on nothing.
+**Amended 2026-09-30, while planning.** The original text promised that
+an anchor whose CFI or rects no longer resolve would be re-found by
+searching its stored `text`. Planning showed that fallback is
+unreachable in this design, so it is not built and the promise is
+withdrawn here rather than left as an untested claim.
+
+An annotation binds to `file_sha`, which is a content hash (§4.1).
+Different bytes give a different hash, so the reader never loads an old
+annotation against a changed file — it loads nothing for that file and
+there is no stale anchor to re-find. A text-search fallback would be
+code that cannot run.
+
+What the reader does instead:
+
+- **`epub` anchors** resolve by CFI. One that does not resolve is listed
+  in the sidebar and simply not painted.
+- **`pdf-text` anchors** resolve by page and rects, and are likewise
+  listed but not painted if the page is absent.
 - **`pdf-area` anchors** are bound to a page number and nothing else.
-  If the PDF file is replaced by one with different pagination, they
-  are wrong and cannot be detected as wrong. This is an accepted
-  ceiling of choosing area highlights over OCR (§9).
+
+An anchor kind this build does not know — a sidecar written by a future
+version — is treated the same way: listed, not painted, never dropped
+on write (§7).
+
+`text` is still stored on every anchor that has any. Its justification
+is sub-project C, which exports the quoted passage, not re-anchoring.
+
+The one path that can still put an annotation next to different bytes is
+sub-project A's offer to carry a sidecar across when a re-downloaded
+copy hashes differently. Annotations carried that way keep a `file_sha`
+that matches nothing and are listed but never painted — visible, not
+silently lost. Recorded as a ceiling in §9.
 
 ## 4. The annotation record
 
@@ -303,6 +327,10 @@ EPUB, and a book with annotations on two different files.
 - `pdf-area` anchors are bound to a page number; replacing the PDF with
   a differently paginated one silently misplaces them (§3.1). OCR plus
   text anchors is the upgrade path, deliberately not taken.
+- An annotation carried across by A's changed-hash sidecar rescue keeps
+  a `file_sha` that matches no file, so it is listed on the book page
+  but never painted in the reader. Re-pointing it would need a
+  re-anchoring pass that §3.1 explains this design cannot reach.
 - No cross-book annotation search. Annotations live only in sidecars,
   so finding a half-remembered highlight means knowing the book. Adding
   an `annotations` table to the index is the upgrade path.
