@@ -104,6 +104,11 @@ def _cn_int(s: str) -> int:
     return (_CN_DIGITS[tens] if tens else 1) * 10 + (_CN_DIGITS[ones] if ones else 0)
 
 
+def _has_words(s: str) -> bool:
+    """At least two letters or one CJK character: "2023" is not a title."""
+    return bool(re.search(r"[一-鿿]", s)) or len(re.findall(r"[^\W\d_]", s)) >= 2
+
+
 def split_volume(title: str | None) -> tuple[str, str | None]:
     """("胡适文集", "2") from "胡适文集 02" / "胡适文集(2)" / "胡适文集第二卷".
 
@@ -113,7 +118,7 @@ def split_volume(title: str | None) -> tuple[str, str | None]:
     title = title or ""
     m = _VOLUME.search(title)
     base = title[: m.start()].strip(" -_.·") if m else ""
-    if not m or len(base) < 2:
+    if not m or not _has_words(base):
         return title, None
     d, c, k, h, p = m.group("d", "c", "k", "h", "p")
     vol = str(int(d)) if d else str(_cn_int(c or k)) if (c or k) else (h or p)
@@ -125,7 +130,7 @@ def drop_subtitle(title: str) -> str:
     head = re.split(r"——|--|\+\+| - ", title, maxsplit=1)[0].strip()
     if re.search(r"[一-鿿]", head):
         head = head.split()[0] if head.split() else head
-    return head if len(head) >= 2 else title
+    return head if _has_words(head) else title
 
 
 def short_title(s: str) -> str:

@@ -116,8 +116,9 @@ def test_split_volume_and_drop_subtitle():
     assert split_volume("胡适日记全编007") == ("胡适日记全编", "7")
     assert split_volume("资治通鉴卷二十一") == ("资治通鉴", "21")
     assert split_volume("明朝那些事儿(下)") == ("明朝那些事儿", "下")
-    for title in ["天下", "1984", "天下第一", "三体"]:
+    for title in ["天下", "1984", "天下第一", "三体", "188918"]:
         assert split_volume(title) == (title, None)
     assert drop_subtitle("战争改变历史 1500年以来的军事技术") == "战争改变历史"
     assert drop_subtitle("炮楼里的女人——山西日军性奴隶调查实录") == "炮楼里的女人"
     assert drop_subtitle("Basic topology") == "Basic topology"
+    assert drop_subtitle("2023 - Accumulator-aware quantization") == "2023 - Accumulator-aware quantization"
