@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
-import type { BookDetail as BookDetailData, BookMetadata, WriteBack } from "../api";
+import { Link, useParams } from "react-router-dom";
+import type { Annotation, BookDetail as BookDetailData, BookMetadata, WriteBack } from "../api";
 import {
   ApiError,
   chooseCandidate,
@@ -8,6 +8,7 @@ import {
   coverUrl,
   fileUrl,
   getBook,
+  listAnnotations,
   patchMetadata,
   rematchBook,
 } from "../api";
@@ -16,6 +17,7 @@ import MetadataForm from "../components/MetadataForm";
 import type { SaveOutcome } from "../components/MetadataForm";
 import useCapabilities from "../hooks/useCapabilities";
 import useJob from "../hooks/useJob";
+import { compareAnchors, quoted, where } from "../reader/anchors";
 
 const STATUS_CLASS: Record<string, string> = {
   MATCHED: "ok",
@@ -48,6 +50,20 @@ function nonEmptyQuery(q: RematchQuery): Record<string, string> | undefined {
     if (v.trim()) out[k] = v.trim();
   }
   return Object.keys(out).length ? out : undefined;
+}
+
+function AnnotationRows({ items }: { items: Annotation[] }) {
+  return (
+    <ul>
+      {[...items].sort((x, y) => compareAnchors(x.anchor, y.anchor)).map((a) => (
+        <li key={a.id}>
+          {a.type === "bookmark" ? "⚑ " : ""}
+          <span className="muted">{where(a)}</span> {quoted(a) && <q>{quoted(a)}</q>}{" "}
+          {a.note && <span className="note">{a.note}</span>}
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 export default function BookDetail() {
@@ -93,6 +109,12 @@ export default function BookDetail() {
   useEffect(() => {
     if (convertJob && convertJob.status === "done") load();
   }, [convertJob, load]);
+
+  const [annotations, setAnnotations] = useState<Annotation[]>([]);
+  useEffect(() => {
+    if (!sha) return;
+    listAnnotations(sha).then(setAnnotations).catch(() => setAnnotations([]));
+  }, [sha]);
 
   const handleSave = useCallback(
     async (metadata: BookMetadata, writeBack: WriteBack): Promise<SaveOutcome> => {
@@ -164,6 +186,7 @@ export default function BookDetail() {
   if (loadError && !book) return <p className="error">{loadError}</p>;
   if (!book) return null;
 
+  const orphans = annotations.filter((a) => !book.readable.some((f) => f.file_sha === a.file_sha));
   const sidecar = book.sidecar;
   const meta = sidecar.metadata;
   // Ranked server-side (books.get_book): only the backend knows the
@@ -198,15 +221,50 @@ export default function BookDetail() {
         </p>
 
         <ul className="file-list">
-          {sidecar.files.map((f) => (
-            <li key={f.path}>
-              <a href={fileUrl(sha, f.path)}>{f.path}</a>{" "}
-              <span className="muted">
-                ({f.role}, {f.format})
-              </span>
-            </li>
-          ))}
+          {sidecar.files.map((f) => {
+            const readable = book.readable.find((r) => r.path === f.path);
+            return (
+              <li key={f.path}>
+                <a href={fileUrl(sha, f.path)}>{f.path}</a>{" "}
+                <span className="muted">
+                  ({f.role}, {f.format})
+                </span>{" "}
+                {readable && (readable.engine || readable.convert_to) && (
+                  <Link to={`/read/${sha}?file_sha=${readable.file_sha}`}>
+                    {readable.engine ? "Read" : "Convert & read"}
+                  </Link>
+                )}
+              </li>
+            );
+          })}
         </ul>
+
+        {annotations.length > 0 && (
+          <section>
+            <h3>Highlights and notes</h3>
+            {book.readable
+              .filter((f) => annotations.some((a) => a.file_sha === f.file_sha))
+              .map((f) => (
+                <div key={f.file_sha}>
+                  <h4>
+                    {f.format.toUpperCase()} · {f.role}{" "}
+                    {(f.engine || f.convert_to) && (
+                      <Link to={`/read/${sha}?file_sha=${f.file_sha}`}>open</Link>
+                    )}
+                  </h4>
+                  <AnnotationRows items={annotations.filter((a) => a.file_sha === f.file_sha)} />
+                </div>
+              ))}
+            {/* Annotations whose file is gone (removed, or carried over by a
+                changed-hash sidecar rescue): listed, never painted. */}
+            {orphans.length > 0 && (
+              <div>
+                <h4>Other files (no longer in this book)</h4>
+                <AnnotationRows items={orphans} />
+              </div>
+            )}
+          </section>
+        )}
 
         {actionError && <p className="error">{actionError}</p>}
 

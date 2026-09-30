@@ -699,3 +699,28 @@ main {
   font-size: 0.95rem;
   font-family: inherit;
 }
+
+.reader { display: flex; flex-direction: column; height: 100vh; }
+.reader-toolbar { position: sticky; top: 0; z-index: 10; background: #fff; display: flex; gap: .5rem; align-items: center; padding: .5rem; border-bottom: 1px solid #ddd; }
+.reader-body { display: flex; flex: 1; min-height: 0; }
+.reader-host { flex: 1; overflow: auto; background: #525659; padding: 1rem; }
+.reader-host .pdf-page { margin: 0 auto 1rem; background: #fff; box-shadow: 0 1px 6px rgba(0,0,0,.4); }
+.reader-host.area-mode { cursor: crosshair; }
+.reader-host.area-mode { touch-action: none; }
+.reader-host.area-mode .textLayer { pointer-events: none; user-select: none; touch-action: none; }
+.reader-sidebar { width: 22rem; overflow: auto; border-left: 1px solid #ddd; padding: .5rem; }
+.reader-sidebar .annotations { list-style: none; margin: 0; padding: 0; }
+.reader-sidebar .annotation { border-bottom: 1px solid #eee; padding: .5rem 0; }
+.reader-sidebar .jump { display: flex; gap: .4rem; align-items: baseline; width: 100%; text-align: left; background: none; border: 0; cursor: pointer; }
+.reader-sidebar .swatch { display: inline-block; width: 1rem; height: 1rem; border-radius: 2px; }
+.reader-sidebar .quote { font-style: italic; color: #444; }
+.reader-toolbar .sizing { display: inline-flex; gap: .25rem; align-items: center; }
+.swatch-button { width: 1.25rem; height: 1.25rem; border: 1px solid #999; border-radius: 3px; cursor: pointer; }
+.swatch-button.on { outline: 2px solid #222; }
+.reader-notice { flex: 1; display: grid; place-content: center; gap: .75rem; text-align: center; }
+.banner.error { background: #fdecea; padding: .5rem; display: flex; gap: .5rem; justify-content: space-between; }
+/* pdf.js ships its own text-layer rules; these are the minimum needed
+   for selection to line up with the rendered glyphs. */
+.textLayer { opacity: .25; line-height: 1; }
+.textLayer span { position: absolute; white-space: pre; transform-origin: 0 0; color: transparent; }
+.textLayer ::selection { background: #2979ff; }

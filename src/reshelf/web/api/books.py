@@ -6,16 +6,18 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
+from reshelf.convert import converters
 from reshelf.covers import cover_path, has_cover, thumb_path
 from reshelf.paths import under
 from reshelf.store import index
-from reshelf.store.models import now as models_now
+from reshelf.store.models import Book, now as models_now
 from reshelf.web.deps import AppState, get_state
 from reshelf.web.schemas import (
     BookDetail,
     BookList,
     BookListItem,
     MetadataPatch,
+    ReadableFile,
     WriteBackResult,
 )
 from reshelf.writeback import (
@@ -26,6 +28,27 @@ from reshelf.writeback import (
 )
 
 router = APIRouter(tags=["books"])
+
+
+# The two formats with a browser engine. Everything else is read through
+# its converted form (see ReadableFile.convert_to).
+ENGINES: dict[str, str] = {"pdf": "pdf", "epub": "epub"}
+
+
+def _readable(book: Book) -> list[ReadableFile]:
+    out = []
+    for entry in book.files:
+        fmt = (entry.format or "").lower()
+        engine = ENGINES.get(fmt)
+        out.append(ReadableFile(
+            file_sha=entry.sha256 or book.sha256,
+            path=entry.path,
+            format=fmt,
+            role=entry.role,
+            engine=engine,
+            convert_to=None if engine else converters.target_format(fmt),
+        ))
+    return out
 
 
 @router.get("/books", response_model=BookList)
@@ -109,6 +132,7 @@ def get_book(sha256: str, state: AppState = Depends(get_state)) -> BookDetail:
         # to re-derive it from files[] and could not do the containment
         # check without the root, so it kept a fourth copy of the ranking.
         primary_format=primary.format if primary else None,
+        readable=_readable(book),
     )
 
 

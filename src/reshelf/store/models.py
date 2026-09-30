@@ -5,13 +5,16 @@ reshelf (sub-project B adds annotation fields) survives a rewrite by an
 older one. Load, mutate, dump - unknown keys ride along.
 """
 
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from reshelf.paths import under
+
+logger = logging.getLogger(__name__)
 
 _EXTRA = ConfigDict(extra="allow", populate_by_name=True)
 
@@ -68,6 +71,23 @@ class Reading(BaseModel):
     updated_at: str | None = None
 
 
+class Annotation(BaseModel):
+    """One highlight or bookmark. `anchor` is opaque here by design:
+    the backend stores and returns it verbatim, which is also what makes
+    an anchor kind from a future version survive a rewrite."""
+
+    model_config = _EXTRA
+
+    id: str
+    type: Literal["highlight", "bookmark"] = "highlight"
+    file_sha: str
+    color: str = "yellow"
+    note: str = ""
+    anchor: dict = Field(default_factory=dict)
+    created_at: str = Field(default_factory=now)
+    updated_at: str = Field(default_factory=now)
+
+
 class Book(BaseModel):
     model_config = _EXTRA
 
@@ -77,9 +97,32 @@ class Book(BaseModel):
     metadata: BookMetadata = Field(default_factory=BookMetadata)
     source: Source = Field(default_factory=Source)
     reading: Reading = Field(default_factory=Reading)
-    annotations: list[dict] = Field(default_factory=list)  # written by sub-project B
+    annotations: list[Annotation] = Field(default_factory=list)
     created_at: str = Field(default_factory=now)
     updated_at: str = Field(default_factory=now)
+
+    @field_validator("annotations", mode="before")
+    @classmethod
+    def _drop_malformed_annotations(cls, value: object) -> object:
+        """Sidecars are hand-editable. A junk entry costs that entry, not
+        the book: letting one bad annotation raise here would 500 the
+        detail page of a book whose metadata is fine.
+
+        Validating each entry is the check - a pre-filter on one field
+        only catches the shapes it thought of, and an entry can be a
+        well-formed dict with a plausible id and still be unloadable."""
+        if not isinstance(value, list):
+            return value
+        kept = []
+        for item in value:
+            try:
+                kept.append(
+                    item if isinstance(item, Annotation)
+                    else Annotation.model_validate(item)
+                )
+            except ValidationError:
+                logger.warning("dropping malformed annotation entry: %r", item)
+        return kept
 
     @property
     def is_human(self) -> bool:

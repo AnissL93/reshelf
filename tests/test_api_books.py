@@ -17,6 +17,7 @@ from reshelf.store import index
 from reshelf.store.models import Book, FileEntry
 from reshelf.store.sidecar import SidecarStore
 from reshelf.web.app import create_app
+from tests.helpers import make_epub
 
 pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
 
@@ -247,3 +248,81 @@ def test_get_book_with_no_files_rows_is_404_under_a_non_hash_layout(tmp_path):
     with TestClient(create_app(tmp_path)) as c:
         assert c.get(f"/api/books/{SHA}").status_code == 404
         assert c.get(f"/api/books/{SHA}/file").status_code == 404
+
+
+# -- readable tests -------------------------------------------------------
+
+
+def build(tmp_path, fmt="epub"):
+    """Build a test book with a single file."""
+    cfg = default_config(tmp_path)
+    for sub in ("incoming", "library", "db", "metadata", "derived", "reports", "covers"):
+        (tmp_path / sub).mkdir(parents=True, exist_ok=True)
+    save_config(cfg, tmp_path)
+
+    db = Database(cfg.database.path)
+    db.init_schema()
+    store = SidecarStore(cfg)
+
+    path = tmp_path / "incoming" / f"test.{fmt}"
+    if fmt == "epub":
+        make_epub(path, "Test Title", "Test Author")
+    else:
+        path.write_bytes(b"x")
+
+    book = Book(sha256=SHA, files=[FileEntry(path=str(path), format=fmt)])
+    store.save(book)
+    db.conn.execute(
+        "INSERT INTO files (path, sha256, format, status) VALUES (?,?,?,?)",
+        (str(path), SHA, fmt, "MATCHED"),
+    )
+    index.sync(db.conn, book)
+    db.conn.commit()
+    db.close()
+
+
+def test_readable_marks_a_pdf_for_the_pdf_engine(tmp_path):
+    build(tmp_path, fmt="pdf")
+    with TestClient(create_app(tmp_path)) as c:
+        readable = c.get(f"/api/books/{SHA}").json()["readable"]
+    assert len(readable) == 1
+    assert readable[0]["engine"] == "pdf"
+    assert readable[0]["convert_to"] is None
+    assert readable[0]["file_sha"] == SHA
+
+
+def test_readable_offers_a_conversion_for_a_mobi(tmp_path):
+    build(tmp_path, fmt="mobi")
+    with TestClient(create_app(tmp_path)) as c:
+        readable = c.get(f"/api/books/{SHA}").json()["readable"]
+    assert readable[0]["engine"] is None
+    assert readable[0]["convert_to"] == "epub"
+
+
+def test_readable_offers_pdf_for_a_djvu(tmp_path):
+    build(tmp_path, fmt="djvu")
+    with TestClient(create_app(tmp_path)) as c:
+        readable = c.get(f"/api/books/{SHA}").json()["readable"]
+    assert readable[0]["convert_to"] == "pdf"
+
+
+def test_a_derived_file_gets_its_own_file_sha(tmp_path):
+    """The rule that keeps a PDF's page 42 from being confused with its
+    converted EPUB's CFI: originals carry the book's hash, derived files
+    carry their own."""
+    build(tmp_path)
+    from reshelf.config import load_config
+
+    derived = tmp_path / "derived" / "converted.epub"
+    derived.parent.mkdir(parents=True, exist_ok=True)
+    make_epub(derived, "T", "A")
+    store = SidecarStore(load_config(tmp_path))
+    store.update(SHA, lambda b: b.files.append(FileEntry(
+        path=str(derived), format="epub", role="converted", sha256="d" * 64,
+    )))
+    with TestClient(create_app(tmp_path)) as c:
+        readable = c.get(f"/api/books/{SHA}").json()["readable"]
+    by_sha = {r["file_sha"]: r for r in readable}
+    assert set(by_sha) == {SHA, "d" * 64}
+    assert by_sha["d" * 64]["engine"] == "epub"
+    assert by_sha["d" * 64]["role"] == "converted"
