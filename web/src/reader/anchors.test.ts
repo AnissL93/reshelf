@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { compareAnchors, denormalizeRect, mergeRects, normalizeRect } from "./anchors";
-import type { NormRect, PageBox } from "./engines/types";
+import { compareAnchors, quoted, where, denormalizeRect, mergeRects, normalizeRect } from "./anchors";
+import type { Annotation, NormRect, PageBox } from "./engines/types";
 
 const A4: PageBox = { width: 600, height: 800, rotation: 0 };
 
@@ -151,5 +151,17 @@ describe("compareAnchors", () => {
     const future = { kind: "pdf-ink", page: 1 };
     expect(sort([future, { kind: "pdf-page", page: 99 }])[1]).toBe(future);
     expect(compareAnchors(future, { kind: "other" })).toBe(0);
+  });
+});
+
+describe("where / quoted", () => {
+  const ann = (anchor: object) => ({ anchor }) as unknown as Annotation;
+  it("does not trust a page on an unknown anchor kind", () => {
+    expect(where(ann({ kind: "future-kind", page: 3 }))).toBe("unsupported in this version");
+  });
+  it("quoted returns null for empty or non-string text", () => {
+    expect(quoted(ann({ kind: "pdf-text", text: "" }))).toBeNull();
+    expect(quoted(ann({ kind: "pdf-text", text: 5 }))).toBeNull();
+    expect(quoted(ann({ kind: "pdf-text", text: "hi" }))).toBe("hi");
   });
 });

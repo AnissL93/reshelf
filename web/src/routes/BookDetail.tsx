@@ -52,6 +52,20 @@ function nonEmptyQuery(q: RematchQuery): Record<string, string> | undefined {
   return Object.keys(out).length ? out : undefined;
 }
 
+function AnnotationRows({ items }: { items: Annotation[] }) {
+  return (
+    <ul>
+      {items.map((a) => (
+        <li key={a.id}>
+          {a.type === "bookmark" ? "⚑ " : ""}
+          <span className="muted">{where(a)}</span> {quoted(a) && <q>{quoted(a)}</q>}{" "}
+          {a.note && <span className="note">{a.note}</span>}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export default function BookDetail() {
   const { sha = "" } = useParams<{ sha: string }>();
   const caps = useCapabilities();
@@ -172,6 +186,7 @@ export default function BookDetail() {
   if (loadError && !book) return <p className="error">{loadError}</p>;
   if (!book) return null;
 
+  const orphans = annotations.filter((a) => !book.readable.some((f) => f.file_sha === a.file_sha));
   const sidecar = book.sidecar;
   const meta = sidecar.metadata;
   // Ranked server-side (books.get_book): only the backend knows the
@@ -214,7 +229,7 @@ export default function BookDetail() {
                 <span className="muted">
                   ({f.role}, {f.format})
                 </span>{" "}
-                {readable && (
+                {readable && (readable.engine || readable.convert_to) && (
                   <Link to={`/read/${sha}?file_sha=${readable.file_sha}`}>
                     {readable.engine ? "Read" : "Convert & read"}
                   </Link>
@@ -233,22 +248,21 @@ export default function BookDetail() {
                 <div key={f.file_sha}>
                   <h4>
                     {f.format.toUpperCase()} · {f.role}{" "}
-                    <Link to={`/read/${sha}?file_sha=${f.file_sha}`}>open</Link>
+                    {(f.engine || f.convert_to) && (
+                      <Link to={`/read/${sha}?file_sha=${f.file_sha}`}>open</Link>
+                    )}
                   </h4>
-                  <ul>
-                    {annotations
-                      .filter((a) => a.file_sha === f.file_sha)
-                      .map((a) => (
-                        <li key={a.id}>
-                          {a.type === "bookmark" ? "⚑ " : ""}
-                          <span className="muted">{where(a)}</span>{" "}
-                          {quoted(a) && <q>{quoted(a)}</q>}{" "}
-                          {a.note && <span className="note">{a.note}</span>}
-                        </li>
-                      ))}
-                  </ul>
+                  <AnnotationRows items={annotations.filter((a) => a.file_sha === f.file_sha)} />
                 </div>
               ))}
+            {/* Annotations whose file is gone (removed, or carried over by a
+                changed-hash sidecar rescue): listed, never painted. */}
+            {orphans.length > 0 && (
+              <div>
+                <h4>Other files (no longer in this book)</h4>
+                <AnnotationRows items={orphans} />
+              </div>
+            )}
           </section>
         )}
 
