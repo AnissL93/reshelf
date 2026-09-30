@@ -85,6 +85,49 @@ def is_junk_author(author: str | None) -> bool:
     return not author or bool(_JUNK_AUTHOR.search(author.strip()))
 
 
+_CN_DIGITS = {c: i for i, c in enumerate("零一二三四五六七八九")}
+_VOLUME = re.compile(
+    r"[\s(（]*(?:"
+    r"第?\s*(?P<d>\d{1,3})\s*[卷册部集辑]?"  # "文集 02", "全编007", "第3卷"
+    r"|第\s*(?P<c>[一二三四五六七八九十]{1,3})\s*[卷册部集辑]"  # "第三卷"
+    r"|卷\s*(?P<k>[一二三四五六七八九十]{1,3})"  # "卷二"
+    r"|(?P<h>[上中下])\s*[卷册]"  # "上册"
+    r"|(?<=[(（])(?P<p>[上中下])(?=[)）])"  # "(上)"
+    r")\s*[)）]?\s*$"
+)
+
+
+def _cn_int(s: str) -> int:
+    if "十" not in s:
+        return int("".join(str(_CN_DIGITS[c]) for c in s))
+    tens, _, ones = s.partition("十")
+    return (_CN_DIGITS[tens] if tens else 1) * 10 + (_CN_DIGITS[ones] if ones else 0)
+
+
+def split_volume(title: str | None) -> tuple[str, str | None]:
+    """("胡适文集", "2") from "胡适文集 02" / "胡适文集(2)" / "胡适文集第二卷".
+
+    None when there is no volume marker, or nothing would be left of the
+    title ("1984" is a title, not volume 1984 of nothing).
+    """
+    title = title or ""
+    m = _VOLUME.search(title)
+    base = title[: m.start()].strip(" -_.·") if m else ""
+    if not m or len(base) < 2:
+        return title, None
+    d, c, k, h, p = m.group("d", "c", "k", "h", "p")
+    vol = str(int(d)) if d else str(_cn_int(c or k)) if (c or k) else (h or p)
+    return base, vol
+
+
+def drop_subtitle(title: str) -> str:
+    """Main title before a dash-style or (for Chinese) space-separated subtitle."""
+    head = re.split(r"——|--|\+\+| - ", title, maxsplit=1)[0].strip()
+    if re.search(r"[一-鿿]", head):
+        head = head.split()[0] if head.split() else head
+    return head if len(head) >= 2 else title
+
+
 def short_title(s: str) -> str:
     """Main title for provider search: cut subtitles and bracketed suffixes."""
     head = re.split(r"[:：(（【\[]", s, maxsplit=1)[0].strip(" -_.")

@@ -331,3 +331,22 @@ def test_local_books_drop_account_names_posing_as_authors():
     assert _local_books(r)[0].authors == []
     r["path"], r["author_raw"] = "/b/Dune.pdf", "Frank Herbert"
     assert _local_books(r)[0].authors == ["Frank Herbert"]
+
+
+def test_volumes_match_only_their_own_volume():
+    from reshelf.matching.scorer import LocalBook, confidence_from_score, score_candidate
+    from reshelf.metadata.models import Author, Candidate, Edition, Work
+    from reshelf.pipeline import _local_books
+
+    def conf(local_title, cand_title):
+        c = Candidate(provider="douban", provider_id="1", edition=Edition(
+            work=Work(title=cand_title, authors=[Author(name="胡适")])))
+        s, ev = score_candidate(LocalBook(title=local_title, authors=["胡适"]), c)
+        return confidence_from_score(s, ev)
+
+    assert conf("胡适文集 11", "胡适文集(11)") >= 0.9
+    assert conf("胡适文集 10", "胡适文集(11)") < 0.5
+    assert conf("胡适文集", "胡适文集(11)") < 0.5
+    r = {"path": "/b/胡适文集 02.pdf", "title_raw": None, "author_raw": None,
+         "isbn_raw": None, "language_raw": None}
+    assert [(b.title, b.query) for b in _local_books(r)] == [("胡适文集 02", None), ("胡适文集 02", "胡适文集")]

@@ -6,6 +6,7 @@ from rapidfuzz import fuzz
 from reshelf.config import MatchingConfig
 from reshelf.metadata.models import Candidate
 from reshelf.metadata.normalization import (
+    split_volume,
     normalize_author,
     normalize_title,
     search_author,
@@ -25,6 +26,9 @@ class LocalBook:
     language: str | None = None
     publisher: str | None = None
     year: str | None = None
+    # What to send to providers when it differs from `title` (a volume's
+    # series name); scoring still uses `title`.
+    query: str | None = None
 
 
 def _author_variants(name: str) -> set[str]:
@@ -70,6 +74,14 @@ def score_candidate(local: LocalBook, cand: Candidate) -> tuple[float, list[str]
             ev.append("conflict:isbn")
 
     lt, ct = _norm_title(local.title), _norm_title(e.work.title)
+    (lb, lv), (cb, cv) = split_volume(local.title), split_volume(e.work.title)
+    if lv and cv:
+        if lv != cv:
+            score -= 50
+            ev.append("conflict:volume")
+        lt, ct = _norm_title(lb), _norm_title(cb)
+    elif lv or cv:
+        lt = ct = ""  # one volume of a set vs. the set, or another volume: unknown
     if lt and ct:
         if lt == ct:
             score += 40

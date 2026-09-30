@@ -106,3 +106,18 @@ def test_is_junk_title():
         assert is_junk_title(junk), junk
     for real in ["苏美尔神话", "Deflation and Liberty", "Dune"]:
         assert not is_junk_title(real), real
+
+
+def test_split_volume_and_drop_subtitle():
+    from reshelf.metadata.normalization import drop_subtitle, split_volume
+
+    assert split_volume("胡适文集 02") == ("胡适文集", "2")
+    assert split_volume("胡适文集(11)") == ("胡适文集", "11")
+    assert split_volume("胡适日记全编007") == ("胡适日记全编", "7")
+    assert split_volume("资治通鉴卷二十一") == ("资治通鉴", "21")
+    assert split_volume("明朝那些事儿(下)") == ("明朝那些事儿", "下")
+    for title in ["天下", "1984", "天下第一", "三体"]:
+        assert split_volume(title) == (title, None)
+    assert drop_subtitle("战争改变历史 1500年以来的军事技术") == "战争改变历史"
+    assert drop_subtitle("炮楼里的女人——山西日军性奴隶调查实录") == "炮楼里的女人"
+    assert drop_subtitle("Basic topology") == "Basic topology"

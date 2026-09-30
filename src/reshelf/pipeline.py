@@ -32,7 +32,15 @@ from reshelf.matching.scorer import (
 )
 from reshelf.metadata.isbn import find_isbns
 from reshelf.metadata.models import Candidate
-from reshelf.metadata.normalization import is_junk_author, is_junk_title, parse_filename, search_author, short_title
+from reshelf.metadata.normalization import (
+    drop_subtitle,
+    is_junk_author,
+    is_junk_title,
+    parse_filename,
+    search_author,
+    short_title,
+    split_volume,
+)
 from reshelf.paths import resolve_inside_root
 from reshelf.planner.committer import apply_plan, rollback_journal
 from reshelf.planner.planner import generate_plan
@@ -231,7 +239,7 @@ def _gather_candidates(providers: list, local: LocalBook) -> list:
     for provider in providers:
         if not local.title:
             break
-        title_q = short_title(local.title)
+        title_q = local.query or short_title(local.title)
         author_q = search_author(local.authors[0]) if local.authors else None
         found = provider.search(title_q, author_q)
         if not found and author_q:
@@ -264,15 +272,26 @@ def _local_books(row) -> list[LocalBook]:
         authors = []
     if not authors and fn_author:
         authors = [fn_author]
+    # Each title as-is, then without its subtitle, then as its series name
+    # (searched without the volume number, scored with it).
+    variants: list[tuple[str, str]] = []
+    for t in filter(None, titles):
+        base, vol = split_volume(t)
+        variants.append((t, short_title(t)))
+        if vol:
+            variants.append((t, base))
+        else:
+            variants.append((drop_subtitle(t), short_title(drop_subtitle(t))))
     out: list[LocalBook] = []
-    for t in titles:
-        if t and all(short_title(t) != short_title(b.title) for b in out):
+    for title, query in variants:
+        if all(query != (b.query or short_title(b.title)) for b in out):
             out.append(
                 LocalBook(
-                    title=t,
+                    title=title,
                     authors=authors,
                     isbn13s=[row["isbn_raw"]] if row["isbn_raw"] else [],
                     language=row["language_raw"],
+                    query=query if query != short_title(title) else None,
                 )
             )
     return out or [LocalBook(title=fn_title, authors=authors, language=row["language_raw"])]
