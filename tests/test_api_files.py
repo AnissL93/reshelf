@@ -2,6 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from reshelf.web.app import create_app
+from tests.helpers import make_epub
 from tests.test_api_metadata import SHA, build
 
 
@@ -55,31 +56,50 @@ def test_file_for_an_unknown_book_is_404(client):
     assert client.get("/api/books/" + "f" * 64 + "/file").status_code == 404
 
 
-def test_a_sidecar_pointing_outside_the_library_root_is_refused(tmp_path):
-    """Defence in depth: the served path is always inside the root."""
-    build(tmp_path)
+def test_a_book_scanned_from_outside_the_library_root_is_served(tmp_path):
+    """The library spans wherever the user pointed `scan`, not just the root.
+
+    `reshelf scan /mnt/books` is the normal way a book enters the library,
+    so a sidecar recording a path outside `library.root` is the common
+    case, not an attack. Serving it is the whole point of the endpoint.
+    """
+    root = tmp_path / "root"
+    build(root)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    book_path = elsewhere / "Scanned.epub"
+    make_epub(book_path, "Old Title", "Old Author")
+
     from reshelf.config import load_config
     from reshelf.store.sidecar import SidecarStore
 
-    store = SidecarStore(load_config(tmp_path))
-    store.update(SHA, lambda b: setattr(b.files[0], "path", "/etc/passwd"))
+    store = SidecarStore(load_config(root))
+    store.update(SHA, lambda b: setattr(b.files[0], "path", str(book_path)))
+    with TestClient(create_app(root)) as c:
+        r = c.get(f"/api/books/{SHA}/file")
+    assert r.status_code == 200
+    assert r.content == book_path.read_bytes()
+
+
+def test_a_path_the_sidecar_does_not_record_is_refused(tmp_path):
+    """`?path=` is caller-supplied, so it may only name a recorded file.
+
+    This - not root containment - is what stops the endpoint being turned
+    into an arbitrary-file reader over HTTP.
+    """
+    build(tmp_path)
     with TestClient(create_app(tmp_path)) as c:
-        assert c.get(f"/api/books/{SHA}/file").status_code == 404
+        r = c.get(f"/api/books/{SHA}/file", params={"path": "/etc/passwd"})
+    assert r.status_code == 404
 
 
-def test_a_symlink_escaping_the_library_root_is_refused(tmp_path):
-    """The same guard must catch a symlink, not just a literal '..' path."""
+def test_a_sidecar_pointing_at_a_missing_file_is_404(tmp_path):
     build(tmp_path)
     from reshelf.config import load_config
     from reshelf.store.sidecar import SidecarStore
 
-    outside = tmp_path.parent / "outside-secret.epub"
-    outside.write_bytes(b"top secret")
-    link = tmp_path / "library" / "escape.epub"
-    link.symlink_to(outside)
-
     store = SidecarStore(load_config(tmp_path))
-    store.update(SHA, lambda b: setattr(b.files[0], "path", str(link)))
+    store.update(SHA, lambda b: setattr(b.files[0], "path", "/no/such/file.epub"))
     with TestClient(create_app(tmp_path)) as c:
         assert c.get(f"/api/books/{SHA}/file").status_code == 404
 

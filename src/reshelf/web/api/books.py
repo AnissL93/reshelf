@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from reshelf.covers import cover_path, has_cover, thumb_path
-from reshelf.paths import resolve_inside_root, under
+from reshelf.paths import under
 from reshelf.store import index
 from reshelf.store.models import now as models_now
 from reshelf.web.deps import AppState, get_state
@@ -282,9 +282,16 @@ def get_file(
         entry = book.primary_file(_library_dir(state))
     if entry is None:
         raise HTTPException(404, "no file recorded for this book")
-    path = resolve_inside_root(Path(state.cfg.library.root), entry.path)
-    if path is None:
-        raise HTTPException(404, "file missing or outside the library root")
+    # No root containment here: a library legitimately spans wherever the
+    # user pointed `scan`, so most sidecars record a path outside
+    # library.root and gating on it 404s the whole library. What keeps this
+    # from being an arbitrary-file reader is above - `?path=` must match a
+    # recorded files[] entry exactly, so HTTP input can never name a new
+    # path. The remaining input is the sidecar itself, which only the
+    # operator can write.
+    path = Path(entry.path)
+    if not path.is_file():
+        raise HTTPException(404, "file missing")
 
     media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
     size = path.stat().st_size
