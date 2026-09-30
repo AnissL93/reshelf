@@ -125,8 +125,26 @@ describe("compareAnchors", () => {
   });
 
   it("returns 0 across families and does not throw on a malformed cfi", () => {
-    expect(compareAnchors({ kind: "pdf-page", page: 1 }, { kind: "epub", cfi: "epubcfi(/6/2)" })).toBe(0);
-    expect(() => compareAnchors({ kind: "epub", cfi: "garbage" }, { kind: "epub", cfi: "epubcfi(/6/2)" })).not.toThrow();
+    // A valid CFI on both sides, so only the family guard can produce 0
+    // here: without it this would compare the missing cfi and could not be 0.
+    const pdf = { kind: "pdf-page", page: 1 };
+    const epub = { kind: "epub", cfi: "epubcfi(/6/2)" };
+    expect(compareAnchors(pdf, epub)).toBe(0);
+    expect(compareAnchors(epub, pdf)).toBe(0);
+  });
+
+  it("an epub anchor with no cfi reaches the catch and returns 0", () => {
+    const broken = { kind: "epub" }; // compareCfi(undefined, ...) throws
+    expect(compareAnchors(broken, { kind: "epub", cfi: "epubcfi(/6/2)" })).toBe(0);
+  });
+
+  it("malformed pdf payloads sort as y = 0 without NaN or throwing", () => {
+    const empty = { kind: "pdf-text", page: 1, rects: [], text: "" };
+    const missing = { kind: "pdf-text", page: 1 };
+    const low = { kind: "pdf-area", page: 1, rect: [0, 0.4, 1, 1] };
+    expect(compareAnchors(empty, low)).toBeLessThan(0);
+    expect(compareAnchors(missing, low)).toBeLessThan(0);
+    expect(compareAnchors(missing, empty)).toBe(0);
   });
 
   it("sorts an unknown kind last without throwing", () => {

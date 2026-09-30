@@ -185,6 +185,20 @@ describe("annotation queue", () => {
     expect(s.pend.some((e) => e.kind === "list")).toBe(true);
   });
 
+  it("localId survives the id swap when a create settles", () => {
+    const s = new Sim();
+    const local = s.create(A, "x");
+    const before = s.view(A).list[0];
+    expect([before.id, before.localId]).toEqual([local, local]);
+    s.settle("create");
+    const after = s.view(A).list[0];
+    expect(after.id).not.toBe(local);
+    expect(after.localId).toBe(local);
+    // and a server-born annotation is its own localId
+    s.send({ type: "listOk", scope: A, issuedAt: 99, list: [{ ...after, id: "srv", }] });
+    expect(s.view(A).list[0].localId).toBe("srv");
+  });
+
   it("G2. edit and remove through a stale pending id reach the server id", () => {
     const s = new Sim();
     const id = s.create(A, "x");

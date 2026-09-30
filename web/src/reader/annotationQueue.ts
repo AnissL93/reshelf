@@ -233,17 +233,28 @@ export function reduce(q: Q, a: Action): { q: Q; fx: Effect[] } {
 
 /** What to render for one file: server list with queued edits overlaid,
  * then every live unsaved mark. */
+/** `localId` is the identity that never changes: the mark's original
+ * `pending-…` id, kept after a save swaps `id` to the server's. Use it for
+ * React keys and UI state; use `id` for requests. Server-born annotations
+ * have localId === id. */
+export type Listed = Annotation & { localId: string };
+
 export function select(q: Q, key: string) {
-  const list: Annotation[] = (q.server.get(key) ?? []).map((e) => {
+  const local = new Map<string, string>(); // server id -> original local id
+  for (const [l, s] of q.alias) local.set(s, l);
+  const list: Listed[] = (q.server.get(key) ?? []).map((e) => {
     const p = q.patches.get(e.a.id);
-    return p ? { ...e.a, ...defined(p.body) } : e.a;
+    return { ...e.a, ...(p ? defined(p.body) : {}), localId: local.get(e.a.id) ?? e.a.id };
   });
   let unsaved = 0;
   for (const m of q.marks.values()) {
     if (m.scope.key !== key) continue;
     if (m.status === "failed") unsaved += 1;
     if (m.status !== "cancelled") {
-      list.push({ ...m.annotation, ...defined({ note: m.body.note, color: m.body.color }) });
+      list.push({
+        ...m.annotation, ...defined({ note: m.body.note, color: m.body.color }),
+        localId: m.annotation.id,
+      });
     }
   }
   for (const p of q.patches.values()) {

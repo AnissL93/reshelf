@@ -78,8 +78,12 @@ type AnyAnchor = Anchor | { kind: string; [k: string]: unknown };
 function pdfKey(a: Anchor): [number, number] | null {
   switch (a.kind) {
     case "pdf-page": return [a.page, 0]; // top of its page
-    case "pdf-area": return [a.page, a.rect[1]];
-    case "pdf-text": return [a.page, Math.min(...a.rects.map((r) => r[1]))];
+    case "pdf-area": return [a.page, Number.isFinite(a.rect?.[1]) ? a.rect[1] : 0];
+    case "pdf-text": {
+      // Hand-editable sidecar: a malformed payload is y = 0, not NaN or a throw.
+      const ys = Array.isArray(a.rects) ? a.rects.map((r) => r?.[1]).filter(Number.isFinite) : [];
+      return [a.page, ys.length ? Math.min(...ys) : 0];
+    }
     default: return null;
   }
 }
@@ -92,7 +96,7 @@ export function compareAnchors(a: AnyAnchor, b: AnyAnchor): number {
   if (!ka || !kb) return Number(!ka) - Number(!kb);
 
   if (a.kind === "epub" || b.kind === "epub") {
-    if (a.kind !== b.kind) return 0;
+    if (a.kind !== b.kind) return 0; // cross-family: unorderable
     try {
       return compareCfi((a as Anchor & { kind: "epub" }).cfi, (b as Anchor & { kind: "epub" }).cfi);
     } catch {

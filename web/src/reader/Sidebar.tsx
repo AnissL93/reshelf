@@ -4,14 +4,22 @@ import { useState } from "react";
 import { COLORS, SWATCH } from "./colors";
 import { compareAnchors } from "./anchors";
 import type { Annotation, AnnotationColor } from "../api";
+import type { Listed } from "./annotationQueue";
 
 function where(ann: Annotation): string {
+  // Known kinds only. A future kind that happens to carry a `page` must
+  // not read as understood - listed, not hidden, and labelled honestly.
   const anchor = ann.anchor as { kind: string; page?: number };
-  if (typeof anchor.page === "number") return `p.${anchor.page}`;
-  if (anchor.kind === "epub") return "location";
-  // A kind this build does not know. Listed, not hidden - it is the
-  // user's data and the next version may understand it (spec section 7).
-  return "unsupported in this version";
+  switch (anchor.kind) {
+    case "pdf-text":
+    case "pdf-area":
+    case "pdf-page":
+      return `p.${anchor.page}`;
+    case "epub":
+      return "location";
+    default:
+      return "unsupported in this version";
+  }
 }
 
 function quoted(ann: Annotation): string | null {
@@ -22,7 +30,7 @@ function quoted(ann: Annotation): string | null {
 export default function Sidebar({
   annotations, onJump, onUpdate, onRemove, unsaved, error, onRetry,
 }: {
-  annotations: Annotation[];
+  annotations: Listed[];
   onJump: (a: Annotation) => void;
   onUpdate: (id: string, body: { note?: string; color?: AnnotationColor }) => void;
   onRemove: (id: string) => void;
@@ -48,7 +56,7 @@ export default function Sidebar({
       )}
       <ul className="annotations">
         {sorted.map((ann) => (
-          <li key={ann.id} className={`annotation ${ann.type}`}>
+          <li key={ann.localId} className={`annotation ${ann.type}`}>
             <button className="jump" onClick={() => onJump(ann)}>
               <span
                 className="swatch"
@@ -62,7 +70,7 @@ export default function Sidebar({
               {quoted(ann) && <q className="quote">{quoted(ann)}</q>}
             </button>
 
-            {editing === ann.id ? (
+            {editing === ann.localId ? (
               <div className="note-edit">
                 <textarea
                   value={draft}
@@ -83,7 +91,7 @@ export default function Sidebar({
               <button
                 className="note"
                 onClick={() => {
-                  setEditing(ann.id);
+                  setEditing(ann.localId);
                   setDraft(ann.note);
                 }}
               >
