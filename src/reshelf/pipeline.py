@@ -32,7 +32,7 @@ from reshelf.matching.scorer import (
 )
 from reshelf.metadata.isbn import find_isbns
 from reshelf.metadata.models import Candidate
-from reshelf.metadata.normalization import search_author, short_title, title_from_filename
+from reshelf.metadata.normalization import is_junk_title, parse_filename, search_author, short_title
 from reshelf.paths import resolve_inside_root
 from reshelf.planner.committer import apply_plan, rollback_journal
 from reshelf.planner.planner import generate_plan
@@ -241,13 +241,38 @@ def _gather_candidates(providers: list, local: LocalBook) -> list:
     return []
 
 
+def _local_books(row) -> list[LocalBook]:
+    """One LocalBook per distinct title worth searching, most trusted first.
+
+    The embedded title wins unless it is tool junk ("SSReader Print.") or
+    Latin text on a book whose filename is Chinese; the filename title is
+    the fallback either way. The filename also supplies an author when the
+    file has none embedded.
+    """
+    fn_title, fn_author = parse_filename(Path(row["path"]).stem)
+    raw = None if is_junk_title(row["title_raw"]) else row["title_raw"]
+    titles = [raw, fn_title]
+    if raw and _HAS_CJK.search(fn_title) and not _HAS_CJK.search(raw):
+        titles.reverse()
+    authors = [a.strip() for a in (row["author_raw"] or "").split(";") if a.strip()]
+    if not authors and fn_author:
+        authors = [fn_author]
+    out: list[LocalBook] = []
+    for t in titles:
+        if t and all(short_title(t) != short_title(b.title) for b in out):
+            out.append(
+                LocalBook(
+                    title=t,
+                    authors=authors,
+                    isbn13s=[row["isbn_raw"]] if row["isbn_raw"] else [],
+                    language=row["language_raw"],
+                )
+            )
+    return out or [LocalBook(title=fn_title, authors=authors, language=row["language_raw"])]
+
+
 def _local_book(row) -> LocalBook:
-    return LocalBook(
-        title=row["title_raw"] or title_from_filename(Path(row["path"]).stem),
-        authors=[a.strip() for a in (row["author_raw"] or "").split(";") if a.strip()],
-        isbn13s=[row["isbn_raw"]] if row["isbn_raw"] else [],
-        language=row["language_raw"],
-    )
+    return _local_books(row)[0]
 
 
 def build_providers(cfg: Config, client) -> list:
@@ -269,14 +294,17 @@ def build_providers(cfg: Config, client) -> list:
                     cfg.library.root / "cache" / "douban", cfg.cache.ttl_days
                 ),
                 apikey=cfg.providers.douban.apikey,
+                min_interval=2.0,  # gentler pacing; a throttled Douban answers []
             )
         )
     return providers
 
 
 def _match_file(db: Database, providers: list, mcfg, row) -> str:
-    local = _local_book(row)
-    candidates = _gather_candidates(_order_providers(providers, local), local)
+    for local in _local_books(row):
+        candidates = _gather_candidates(_order_providers(providers, local), local)
+        if candidates:
+            break
     for cand in candidates:
         cand.score, cand.evidence = score_candidate(local, cand)
         cand.confidence = confidence_from_score(cand.score, cand.evidence)
@@ -318,7 +346,12 @@ class AIDisabledError(RuntimeError):
 
 
 def match(
-    cfg: Config, db: Database, store: SidecarStore, offline: bool, progress: Progress
+    cfg: Config,
+    db: Database,
+    store: SidecarStore,
+    offline: bool,
+    progress: Progress,
+    retry_unresolved: bool = False,
 ) -> dict[str, int]:
     client = (
         None if offline
@@ -330,6 +363,8 @@ def match(
     counts: dict[str, int] = {}
     try:
         rows = db.files_with_status("IDENTIFIED")
+        if retry_unresolved:
+            rows += db.files_with_status("UNRESOLVED")
         total = len(rows)
         for i, row in enumerate(rows, 1):
             progress(i, total, row["path"])

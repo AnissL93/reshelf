@@ -80,3 +80,29 @@ def test_language_codes():
     assert normalize_language("zh-CN") == "zh"
     assert normalize_language("EN") == "en"
     assert normalize_language(None) is None
+
+
+def test_parse_filename_takes_author_from_every_naming_scheme():
+    from reshelf.metadata.normalization import parse_filename
+
+    assert parse_filename("香港电影血与骨 (汤祯兆) (Z-Library)") == ("香港电影血与骨", "汤祯兆")
+    assert parse_filename("中國回春秘訣 (將門文物編輯部) (Z-Library)-1") == ("中國回春秘訣", "將門文物編輯部")
+    assert parse_filename("佛教小百科-文化[佟洵][2011]") == ("佛教小百科-文化", "佟洵")
+    assert parse_filename(
+        "张双兵 - 炮楼里的女人——山西日军性奴隶调查实录 (“苏人文学”系列) (2011, 江苏人民出版社) - libgen.li"
+    ) == ("炮楼里的女人——山西日军性奴隶调查实录", "张双兵")
+    assert parse_filename(
+        "[汉译世界学术名著丛书]A0406 第一哲学沉思集 ([法]笛卡尔；庞景仁译) (Z-Library)"
+    ) == ("第一哲学沉思集", "[法]笛卡尔；庞景仁译")
+    assert parse_filename("57-终结贫穷之路中国和印度发展战略比较") == ("终结贫穷之路中国和印度发展战略比较", None)
+    assert parse_filename("佐藤可士和的超整理术 -- 佐藤可士和 -- 2009") == ("佐藤可士和的超整理术", "佐藤可士和")
+    assert parse_filename("Basic topology") == ("Basic topology", None)
+
+
+def test_is_junk_title():
+    from reshelf.metadata.normalization import is_junk_title
+
+    for junk in ["SSReader Print.", "Crack by RAOGY.", "print", "a", "!00001.pdg", "<4D6963>", "13169674", None]:
+        assert is_junk_title(junk), junk
+    for real in ["苏美尔神话", "Deflation and Liberty", "Dune"]:
+        assert not is_junk_title(real), real

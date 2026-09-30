@@ -5,6 +5,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
+EMPTY_TTL = timedelta(days=1)
+
+
 class FileCache:
     def __init__(self, directory: Path, ttl_days: int = 30):
         self.directory = Path(directory)
@@ -21,8 +24,10 @@ class FileCache:
         if not p.exists():
             return None
         rec = json.loads(p.read_text())
-        age_limit = datetime.now(timezone.utc) - self.ttl
-        if datetime.fromisoformat(rec["retrieved_at"]) < age_limit:
+        # An empty answer may be a throttled one (Douban answers [] when it
+        # rate-limits), so it only stands for a day, not the full TTL.
+        ttl = self.ttl if rec["response"] else min(self.ttl, EMPTY_TTL)
+        if datetime.fromisoformat(rec["retrieved_at"]) < datetime.now(timezone.utc) - ttl:
             return None
         return rec["response"]
 

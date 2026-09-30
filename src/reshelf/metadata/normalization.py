@@ -22,12 +22,57 @@ def clean_text(s: str | None) -> str | None:
     return s or None
 
 
-def title_from_filename(stem: str) -> str:
-    """Best-effort title from a filename stem (Z-Library / Anna's Archive junk)."""
-    s = stem.split(" -- ")[0]
+_SITE_TAG = re.compile(r"(?i)z-?lib|1lib|libgen|anna.?s.archive")
+
+
+def parse_filename(stem: str) -> tuple[str, str | None]:
+    """Best-effort (title, author) from a filename stem.
+
+    Handles Anna's Archive `Title -- Author -- ...`, libgen
+    `Author - Title (series) (year, pub) - libgen.li`, Z-Library
+    `Title (Author) (Z-Library)` and `Title[Author][2011]`.
+    """
+    author = None
+    if " -- " in stem:
+        parts = stem.split(" -- ")
+        s, author = parts[0], parts[1]
+    else:
+        s = stem
+        m = re.match(r"(.+?) - (.+?)(?: - libgen[\w.]*)?$", s)
+        if m and _SITE_TAG.search(s):
+            author, s = m.group(1), m.group(2)
+        else:
+            groups = [g for g in re.findall(r"\(([^()]*)\)", s) if not _SITE_TAG.search(g)]
+            author = groups[0] if groups else None
+    tail = re.search(r"(\[[^\[\]]*\])+\s*$", s)  # trailing [author][year]
+    if tail:
+        if author is None:
+            names = [g for g in re.findall(r"\[([^\[\]]+)\]", tail.group()) if not re.fullmatch(r"[\d\s.-]+", g)]
+            author = names[0] if names else None
+        s = s[: tail.start()]
+    s = re.sub(r"^\s*(\[[^\]]*\]|【[^】]*】)\s*([A-Z]\d+\s)?", "", s)  # leading [series]A0406
     s = re.sub(r"\([^()]*\)", " ", s)  # drop parenthesized authors/site tags
+    s = re.sub(r"^\d{1,3}\s*[-.、_]\s*", "", s.strip())  # leading "57-" numbering
+    s = re.sub(r"-\d$", "", s.strip())  # "-1" duplicate-copy suffix
     s = re.sub(r"\s+", " ", s).strip(" -_.")
-    return s or stem
+    author = re.sub(r"\s+", " ", author).strip() if author else None
+    return s or stem, author or None
+
+
+def title_from_filename(stem: str) -> str:
+    return parse_filename(stem)[0]
+
+
+# Embedded PDF titles that are the producing tool, not the book.
+_JUNK_TITLE = re.compile(
+    r"(?i)^(ssreader|s?crack by|print$|untitled|unknown|microsoft word|outfile"
+    r"|helloworld|ps22pdf|wps office|acdsee|km_c\d|book_\d|isbn_\d|[\w!]*\.(pdg|pdf|docx?|indd|s\d+)$"
+    r"|<[0-9a-f]+>?$|[\da-f]{16,}$|\d+$|.$)"
+)
+
+
+def is_junk_title(title: str | None) -> bool:
+    return not title or bool(_JUNK_TITLE.search(title.strip()))
 
 
 def short_title(s: str) -> str:

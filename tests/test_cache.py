@@ -28,3 +28,14 @@ def test_key_sanitization(tmp_path):
     cache.put("search:three body/problem:liu cixin", {"ok": True})
     assert cache.get("search:three body/problem:liu cixin") == {"ok": True}
     assert all("/" not in p.name for p in tmp_path.glob("*.json"))
+
+
+def test_empty_answer_expires_after_a_day(tmp_path):
+    cache = FileCache(tmp_path, ttl_days=30)
+    cache.put("search:x", [])
+    assert cache.get("search:x") == []
+    path = next(tmp_path.glob("*.json"))
+    rec = json.loads(path.read_text())
+    rec["retrieved_at"] = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+    path.write_text(json.dumps(rec))
+    assert cache.get("search:x") is None

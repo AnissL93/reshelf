@@ -88,13 +88,16 @@ def extract(
 def match(
     root: Path = ROOT_OPTION,
     offline: bool = typer.Option(False, "--offline", help="Use only the local cache"),
+    retry_unresolved: bool = typer.Option(
+        False, "--retry-unresolved", help="Also re-match files left UNRESOLVED"
+    ),
 ) -> None:
-    """Match identified files against Open Library."""
+    """Match identified files against Open Library and Douban."""
     cfg = load_config(root)
     with Database(cfg.database.path) as db:
         try:
             counts = pipeline.match(
-                cfg, db, SidecarStore(cfg), offline, _bar("Matching")
+                cfg, db, SidecarStore(cfg), offline, _bar("Matching"), retry_unresolved
             )
         except RuntimeError as e:
             typer.echo(str(e), err=True)

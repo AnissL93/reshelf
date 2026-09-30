@@ -304,3 +304,18 @@ def test_resolve_reports_ai_errors_via_progress(env, monkeypatch):
     )
     assert result["errors"] == 1
     assert any("boom" in m for m in messages)
+
+
+def test_local_books_prefer_the_filename_over_junk_or_latin_embedded_titles():
+    from reshelf.pipeline import _local_books
+
+    def row(path, title_raw, author_raw=None):
+        return {"path": path, "title_raw": title_raw, "author_raw": author_raw,
+                "isbn_raw": None, "language_raw": None}
+
+    junk = _local_books(row("/b/婆罗门教 (姚卫群) (Z-Library).pdf", "SSReader Print."))
+    assert [(b.title, b.authors) for b in junk] == [("婆罗门教", ["姚卫群"])]
+    latin = _local_books(row("/b/论自由 (密尔) (Z-Library).pdf", "Deflation and Liberty"))
+    assert [b.title for b in latin] == ["论自由", "Deflation and Liberty"]
+    good = _local_books(row("/b/苏美尔神话 (x) (Z-Library).pdf", "苏美尔神话", "克拉莫尔"))
+    assert [(b.title, b.authors) for b in good] == [("苏美尔神话", ["克拉莫尔"])]
