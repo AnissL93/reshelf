@@ -27,6 +27,22 @@ class BookList(BaseModel):
     page_size: int
 
 
+class ReadableFile(BaseModel):
+    """One file of a book, described for the reader.
+
+    `file_sha` is what an annotation binds to, resolved here rather than
+    in the SPA: `FileEntry.sha256` is None on originals, where the book's
+    own hash is the original's, and getting that fallback wrong would
+    attach a PDF's highlights to its converted EPUB."""
+
+    file_sha: str
+    path: str
+    format: str
+    role: str
+    engine: Literal["pdf", "epub"] | None = None
+    convert_to: str | None = None
+
+
 class BookDetail(BaseModel):
     sha256: str
     sidecar: dict[str, Any]
@@ -37,6 +53,7 @@ class BookDetail(BaseModel):
     # Resolved server-side (see books.get_book): the SPA has no library
     # root and so cannot rank files[] correctly on its own.
     primary_format: str | None = None
+    readable: list[ReadableFile] = []
 
 
 class WriteBack(BaseModel):
