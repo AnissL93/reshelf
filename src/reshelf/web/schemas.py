@@ -1,8 +1,8 @@
 """Pydantic request/response models for the web API."""
 
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from reshelf.store.models import BookMetadata
 
@@ -68,3 +68,30 @@ class RematchPayload(BaseModel):
 class JobCreate(BaseModel):
     command: str
     args: dict[str, Any] = {}
+
+
+class AnnotationCreate(BaseModel):
+    """`id`, `created_at` and `updated_at` are assigned server-side. They
+    are absent from this model on purpose: a client that sends one gets
+    it ignored by FastAPI rather than honoured."""
+
+    type: Literal["highlight", "bookmark"] = "highlight"
+    file_sha: str
+    anchor: dict[str, Any]
+    color: Literal["yellow", "green", "blue", "pink"] = "yellow"
+    note: str = ""
+
+
+class AnnotationPatch(BaseModel):
+    """`extra="forbid"` is what turns an attempt to move an anchor into a
+    422 instead of a silently ignored field."""
+
+    model_config = {"extra": "forbid"}
+
+    note: str | None = None
+    color: Literal["yellow", "green", "blue", "pink"] | None = None
+
+
+class ReadingUpdate(BaseModel):
+    locator: str | None = None
+    percent: float = Field(0.0, ge=0.0, le=1.0)

@@ -4,7 +4,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from reshelf.web.api import actions, books, jobs, meta
+from reshelf.web.api import actions, annotations, books, jobs, meta
 from reshelf.web.deps import build_state
 
 SPA_DIR = Path(__file__).parent / "static"
@@ -25,6 +25,7 @@ def create_app(root: Path) -> FastAPI:
     app.include_router(meta.router, prefix="/api")
     app.include_router(books.router, prefix="/api")
     app.include_router(actions.router, prefix="/api")
+    app.include_router(annotations.router, prefix="/api")
     app.include_router(jobs.router, prefix="/api")
     if SPA_DIR.exists():
         # html=True so client-side routes fall back to index.html. Mounted
