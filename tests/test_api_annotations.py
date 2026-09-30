@@ -129,3 +129,11 @@ def test_posting_to_a_book_with_no_sidecar_is_404_not_500(tmp_path):
         )
     assert r.status_code == 404
     assert "extract" in r.json()["detail"]
+
+
+def test_reading_also_accepts_a_post_for_sendbeacon(client):
+    r = client.post(
+        f"/api/books/{SHA}/reading", json={"locator": "page=9", "percent": 0.1}
+    )
+    assert r.status_code == 200
+    assert client.get(f"/api/books/{SHA}").json()["sidecar"]["reading"]["locator"] == "page=9"

@@ -125,6 +125,18 @@ export type Candidate = {
   [extra: string]: unknown;
 };
 
+// reshelf.web.schemas.ReadableFile - one file of a book, described for
+// the reader. `file_sha` is resolved server-side because the fallback
+// rule (originals carry the book's hash) must not be duplicated here.
+export type ReadableFile = {
+  file_sha: string;
+  path: string;
+  format: string;
+  role: string;
+  engine: "pdf" | "epub" | null;
+  convert_to: string | null;
+};
+
 export type BookDetail = {
   sha256: string;
   sidecar: Sidecar;
@@ -137,6 +149,7 @@ export type BookDetail = {
    * needs the root, and guessing at it mis-ranks every book as soon as
    * the root is itself named "library". */
   primary_format: string | null;
+  readable: ReadableFile[];
 };
 
 export type WriteBack = {
@@ -249,6 +262,15 @@ export type Journal = {
  * is what stops a caller from passing a string/number here at compile time. */
 export type ConfirmableCommand = "commit" | "rollback";
 
+// -- annotations (annotations.py) ----------------------------------------
+
+// Defined once, in the reader's types module, and re-exported here so
+// every caller sees the same record. A second Annotation shape on the
+// transport side is how `color` ends up a bare string in one file and a
+// union in another.
+import type { Annotation, AnnotationColor } from "./reader/engines/types";
+export type { Annotation, AnnotationColor } from "./reader/engines/types";
+
 // -- transport --------------------------------------------------------
 
 /** Thrown for any non-2xx response. `detail` carries the FastAPI error body
@@ -346,6 +368,64 @@ export const chooseCandidate = (sha256: string, candidate_id: number) =>
     method: "POST",
     body: JSON.stringify({ candidate_id }),
   });
+
+export const listAnnotations = (sha256: string, fileSha?: string) =>
+  req<Annotation[]>(
+    `/books/${sha256}/annotations${fileSha ? `?file_sha=${fileSha}` : ""}`,
+  );
+
+/** `id`, `created_at` and `updated_at` are assigned by the server; the
+ * parameter type has no slot for them so a caller cannot try. */
+export const createAnnotation = (
+  sha256: string,
+  body: {
+    type: "highlight" | "bookmark";
+    file_sha: string;
+    anchor: object;
+    color?: AnnotationColor;
+    note?: string;
+  },
+) =>
+  req<Annotation>(`/books/${sha256}/annotations`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+
+/** Note and colour only. The server 422s anything else - an anchor is
+ * immutable, because a mark in a different place is a different mark. */
+export const patchAnnotation = (
+  sha256: string,
+  id: string,
+  body: { note?: string; color?: AnnotationColor },
+) =>
+  req<Annotation>(`/books/${sha256}/annotations/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+
+export const deleteAnnotation = (sha256: string, id: string) =>
+  req<void>(`/books/${sha256}/annotations/${id}`, { method: "DELETE" });
+
+export const putReading = (
+  sha256: string,
+  body: { locator: string | null; percent: number },
+) =>
+  req<Reading>(`/books/${sha256}/reading`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+
+/** The unload write. `fetch` is cancelled when the page goes away;
+ * sendBeacon is the only thing the browser guarantees to deliver. */
+export function beaconReading(
+  sha256: string,
+  body: { locator: string | null; percent: number },
+): void {
+  navigator.sendBeacon(
+    `/api/books/${sha256}/reading`,
+    new Blob([JSON.stringify(body)], { type: "application/json" }),
+  );
+}
 
 // -- jobs -----------------------------------------------------------------
 

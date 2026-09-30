@@ -101,3 +101,12 @@ def set_reading(
     return anns.set_reading(
         state.store, sha256, payload.locator, payload.percent, file_path=path
     )
+
+
+@router.post("/books/{sha256}/reading", response_model=Reading)
+def set_reading_beacon(
+    sha256: str, payload: ReadingUpdate, state: AppState = Depends(get_state)
+) -> Reading:
+    """navigator.sendBeacon can only POST, and the unload write is the one
+    we least want to lose. Same body, same effect as the PUT."""
+    return set_reading(sha256, payload, state)
