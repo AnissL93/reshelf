@@ -3,7 +3,7 @@
 // EPUB is reflowable: there is no page geometry to draw a box on, so
 // supportsArea is false and the shell hides the area tool. Anchors are
 // CFIs, which foliate-js generates from a Range and resolves back to one.
-import { FILL } from "../colors";
+import { SWATCH } from "../colors";
 import type { Anchor, Annotation, Engine, Locator } from "./types";
 
 // @ts-expect-error - vendored plain ESM, no type declarations upstream.
@@ -67,7 +67,10 @@ export class EpubEngine implements Engine {
       "draw-annotation",
       ({ draw, annotation }) => {
         const ann = this.annotations.find((a) => cfiOf(a) === annotation.value);
-        draw(Overlayer.highlight, { color: FILL[ann?.color ?? "yellow"] });
+        // SWATCH, not FILL (which the PDF engine uses): Overlayer.highlight
+        // applies its own 0.3 group opacity, so the already-translucent FILL
+        // would compound to ~0.09. A solid colour lands at ~0.30, matching PDF.
+        draw(Overlayer.highlight, { color: SWATCH[ann?.color ?? "yellow"] });
       },
     );
 
