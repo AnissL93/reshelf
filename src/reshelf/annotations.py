@@ -102,6 +102,16 @@ def set_reading(
     percent: float,
     file_path: str | None = None,
 ) -> Reading:
-    reading = Reading(locator=locator, percent=percent, updated_at=now())
-    store.update(sha256, lambda book: setattr(book, "reading", reading), file_path)
-    return reading
+    """Mutates the existing Reading rather than replacing it: `Reading`
+    allows extra keys so a newer reshelf's fields survive a rewrite by
+    this one, and assigning a fresh object over it would drop them."""
+    captured: list[Reading] = []
+
+    def mutate(book: Book) -> None:
+        book.reading.locator = locator
+        book.reading.percent = percent
+        book.reading.updated_at = now()
+        captured.append(book.reading)
+
+    store.update(sha256, mutate, file_path)
+    return captured[0]

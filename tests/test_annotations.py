@@ -125,14 +125,27 @@ def test_list_for_filters_by_file_sha(store):
     assert len(anns.list_for(book)) == 2
 
 
-def test_concurrent_adds_all_land(store):
-    """Two tabs annotating one book. Mutating inside update()'s callback
-    is what makes this safe; building a list in the caller and writing it
-    back would lose one of these."""
+def test_concurrent_adds_all_land(store, monkeypatch):
+    """20 threads add simultaneously, forcing overlapped mutation windows.
+    A barrier ensures all threads reach add() together, and a delayed _write
+    keeps the window open long enough for a naive load-mutate-save (outside
+    the update callback) to lose 19 of the 20 annotations. Mutations inside
+    update()'s callback are atomic; this test would fail against that naive
+    implementation but passes with our callback-based approach."""
+    barrier = threading.Barrier(20)
     errors = []
+
+    # Patch _write to delay, forcing concurrent mutation windows to overlap
+    original_write = store._write
+    def delayed_write(*args, **kwargs):
+        import time
+        time.sleep(0.01)  # 10ms delay
+        return original_write(*args, **kwargs)
+    monkeypatch.setattr(store, "_write", delayed_write)
 
     def go(i):
         try:
+            barrier.wait()  # All threads start at once
             anns.add(store, SHA, type="highlight", file_sha=SHA,
                      anchor={**ANCHOR, "page": i})
         except Exception as exc:  # noqa: BLE001 - reported below
@@ -151,3 +164,22 @@ def test_set_reading_persists(store):
     reading = anns.set_reading(store, SHA, "page=42", 0.37)
     assert reading.percent == 0.37
     assert store.load(SHA).reading.locator == "page=42"
+
+
+def test_set_reading_preserves_extra_keys(store):
+    """Reading allows extra keys so a newer version's fields survive a
+    rewrite by this one. Mutating in-place preserves them; replacing would
+    lose them."""
+    # Craft a sidecar with an unknown key in reading
+    book = store.load(SHA)
+    book.reading = {"locator": "old", "percent": 0.5, "future_field": "future_value"}
+    store.save(book)
+
+    # Update reading
+    reading = anns.set_reading(store, SHA, "new_locator", 0.75)
+
+    # Reload and check both new and old fields are present
+    reloaded = store.load(SHA)
+    assert reloaded.reading.locator == "new_locator"
+    assert reloaded.reading.percent == 0.75
+    assert reloaded.reading.__pydantic_extra__.get("future_field") == "future_value"
