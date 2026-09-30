@@ -319,3 +319,15 @@ def test_local_books_prefer_the_filename_over_junk_or_latin_embedded_titles():
     assert [b.title for b in latin] == ["论自由", "Deflation and Liberty"]
     good = _local_books(row("/b/苏美尔神话 (x) (Z-Library).pdf", "苏美尔神话", "克拉莫尔"))
     assert [(b.title, b.authors) for b in good] == [("苏美尔神话", ["克拉莫尔"])]
+
+
+def test_local_books_drop_account_names_posing_as_authors():
+    from reshelf.pipeline import _local_books
+
+    r = {"path": "/b/通往奴役之路 (哈耶克) (Z-Library).pdf", "title_raw": "通往奴役之路",
+         "author_raw": "Administrator", "isbn_raw": None, "language_raw": None}
+    assert _local_books(r)[0].authors == ["哈耶克"]
+    r["path"], r["author_raw"] = "/b/通往奴役之路.pdf", "mmm"
+    assert _local_books(r)[0].authors == []
+    r["path"], r["author_raw"] = "/b/Dune.pdf", "Frank Herbert"
+    assert _local_books(r)[0].authors == ["Frank Herbert"]

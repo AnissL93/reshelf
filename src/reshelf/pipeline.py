@@ -32,7 +32,7 @@ from reshelf.matching.scorer import (
 )
 from reshelf.metadata.isbn import find_isbns
 from reshelf.metadata.models import Candidate
-from reshelf.metadata.normalization import is_junk_title, parse_filename, search_author, short_title
+from reshelf.metadata.normalization import is_junk_author, is_junk_title, parse_filename, search_author, short_title
 from reshelf.paths import resolve_inside_root
 from reshelf.planner.committer import apply_plan, rollback_journal
 from reshelf.planner.planner import generate_plan
@@ -254,7 +254,14 @@ def _local_books(row) -> list[LocalBook]:
     titles = [raw, fn_title]
     if raw and _HAS_CJK.search(fn_title) and not _HAS_CJK.search(raw):
         titles.reverse()
-    authors = [a.strip() for a in (row["author_raw"] or "").split(";") if a.strip()]
+    authors = [
+        a.strip() for a in (row["author_raw"] or "").split(";")
+        if not is_junk_author(a)
+    ]
+    if _HAS_CJK.search(fn_title) and not any(_HAS_CJK.search(a) for a in authors):
+        # "Administrator", "candice": the PDF's account name, not the author
+        # of a Chinese book. A wrong author scores worse than none.
+        authors = []
     if not authors and fn_author:
         authors = [fn_author]
     out: list[LocalBook] = []

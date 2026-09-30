@@ -75,6 +75,16 @@ def is_junk_title(title: str | None) -> bool:
     return not title or bool(_JUNK_TITLE.search(title.strip()))
 
 
+# Embedded authors that are the machine's account name or the producing tool.
+_JUNK_AUTHOR = re.compile(
+    r"(?i)^(administrator|admin|user|owner|unknown|微软用户|雨林木风|chatgpt\b.*|ms user|wps office|office|ssreader|cnki)$"
+)
+
+
+def is_junk_author(author: str | None) -> bool:
+    return not author or bool(_JUNK_AUTHOR.search(author.strip()))
+
+
 def short_title(s: str) -> str:
     """Main title for provider search: cut subtitles and bracketed suffixes."""
     head = re.split(r"[:：(（【\[]", s, maxsplit=1)[0].strip(" -_.")
