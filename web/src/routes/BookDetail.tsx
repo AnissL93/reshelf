@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
-import type { BookDetail as BookDetailData, BookMetadata, WriteBack } from "../api";
+import { Link, useParams } from "react-router-dom";
+import type { Annotation, BookDetail as BookDetailData, BookMetadata, WriteBack } from "../api";
 import {
   ApiError,
   chooseCandidate,
@@ -8,6 +8,7 @@ import {
   coverUrl,
   fileUrl,
   getBook,
+  listAnnotations,
   patchMetadata,
   rematchBook,
 } from "../api";
@@ -16,6 +17,7 @@ import MetadataForm from "../components/MetadataForm";
 import type { SaveOutcome } from "../components/MetadataForm";
 import useCapabilities from "../hooks/useCapabilities";
 import useJob from "../hooks/useJob";
+import { quoted, where } from "../reader/anchors";
 
 const STATUS_CLASS: Record<string, string> = {
   MATCHED: "ok",
@@ -93,6 +95,12 @@ export default function BookDetail() {
   useEffect(() => {
     if (convertJob && convertJob.status === "done") load();
   }, [convertJob, load]);
+
+  const [annotations, setAnnotations] = useState<Annotation[]>([]);
+  useEffect(() => {
+    if (!sha) return;
+    listAnnotations(sha).then(setAnnotations).catch(() => setAnnotations([]));
+  }, [sha]);
 
   const handleSave = useCallback(
     async (metadata: BookMetadata, writeBack: WriteBack): Promise<SaveOutcome> => {
@@ -198,15 +206,51 @@ export default function BookDetail() {
         </p>
 
         <ul className="file-list">
-          {sidecar.files.map((f) => (
-            <li key={f.path}>
-              <a href={fileUrl(sha, f.path)}>{f.path}</a>{" "}
-              <span className="muted">
-                ({f.role}, {f.format})
-              </span>
-            </li>
-          ))}
+          {sidecar.files.map((f) => {
+            const readable = book.readable.find((r) => r.path === f.path);
+            return (
+              <li key={f.path}>
+                <a href={fileUrl(sha, f.path)}>{f.path}</a>{" "}
+                <span className="muted">
+                  ({f.role}, {f.format})
+                </span>{" "}
+                {readable && (
+                  <Link to={`/read/${sha}?file_sha=${readable.file_sha}`}>
+                    {readable.engine ? "Read" : "Convert & read"}
+                  </Link>
+                )}
+              </li>
+            );
+          })}
         </ul>
+
+        {annotations.length > 0 && (
+          <section>
+            <h3>Highlights and notes</h3>
+            {book.readable
+              .filter((f) => annotations.some((a) => a.file_sha === f.file_sha))
+              .map((f) => (
+                <div key={f.file_sha}>
+                  <h4>
+                    {f.format.toUpperCase()} · {f.role}{" "}
+                    <Link to={`/read/${sha}?file_sha=${f.file_sha}`}>open</Link>
+                  </h4>
+                  <ul>
+                    {annotations
+                      .filter((a) => a.file_sha === f.file_sha)
+                      .map((a) => (
+                        <li key={a.id}>
+                          {a.type === "bookmark" ? "⚑ " : ""}
+                          <span className="muted">{where(a)}</span>{" "}
+                          {quoted(a) && <q>{quoted(a)}</q>}{" "}
+                          {a.note && <span className="note">{a.note}</span>}
+                        </li>
+                      ))}
+                  </ul>
+                </div>
+              ))}
+          </section>
+        )}
 
         {actionError && <p className="error">{actionError}</p>}
 

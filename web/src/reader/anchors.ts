@@ -2,7 +2,7 @@
 // module that gets tested, so everything that can live here does.
 // @ts-expect-error - vendored plain ESM, no type declarations upstream.
 import { compare as compareCfi } from "../../vendor/foliate-js/epubcfi.js";
-import type { Anchor, NormRect, PageBox, PixelRect } from "./engines/types";
+import type { Annotation, Anchor, NormRect, PageBox, PixelRect } from "./engines/types";
 
 const clamp = (n: number, max: number) => Math.min(max, Math.max(0, n));
 
@@ -106,4 +106,25 @@ export function compareAnchors(a: AnyAnchor, b: AnyAnchor): number {
   const [pa, ya] = pdfKey(a as Anchor)!;
   const [pb, yb] = pdfKey(b as Anchor)!;
   return pa - pb || ya - yb;
+}
+
+export function where(ann: Annotation): string {
+  // Known kinds only. A future kind that happens to carry a `page` must
+  // not read as understood - listed, not hidden, and labelled honestly.
+  const anchor = ann.anchor as { kind: string; page?: number };
+  switch (anchor.kind) {
+    case "pdf-text":
+    case "pdf-area":
+    case "pdf-page":
+      return `p.${anchor.page}`;
+    case "epub":
+      return "location";
+    default:
+      return "unsupported in this version";
+  }
+}
+
+export function quoted(ann: Annotation): string | null {
+  const text = (ann.anchor as { text?: unknown }).text;
+  return typeof text === "string" && text ? text : null;
 }

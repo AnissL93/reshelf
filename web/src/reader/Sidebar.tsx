@@ -2,30 +2,9 @@
 // it; the note is edited in place.
 import { useState } from "react";
 import { COLORS, SWATCH } from "./colors";
-import { compareAnchors } from "./anchors";
+import { compareAnchors, quoted, where } from "./anchors";
 import type { Annotation, AnnotationColor } from "../api";
 import type { Listed } from "./annotationQueue";
-
-function where(ann: Annotation): string {
-  // Known kinds only. A future kind that happens to carry a `page` must
-  // not read as understood - listed, not hidden, and labelled honestly.
-  const anchor = ann.anchor as { kind: string; page?: number };
-  switch (anchor.kind) {
-    case "pdf-text":
-    case "pdf-area":
-    case "pdf-page":
-      return `p.${anchor.page}`;
-    case "epub":
-      return "location";
-    default:
-      return "unsupported in this version";
-  }
-}
-
-function quoted(ann: Annotation): string | null {
-  const text = (ann.anchor as { text?: unknown }).text;
-  return typeof text === "string" && text ? text : null;
-}
 
 export default function Sidebar({
   annotations, onJump, onUpdate, onRemove, unsaved, error, onRetry,
