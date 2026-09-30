@@ -39,6 +39,12 @@ export class PdfEngine implements Engine {
   private onText: ((a: Anchor, t: string) => void) | null = null;
   private onArea: ((a: Anchor) => void) | null = null;
   private cleanup: (() => void)[] = [];
+  /** Teardown for things bound to the CURRENT page wrappers. Cleared and
+   * rebuilt on every render pass, because setScale throws the wrappers
+   * away. Kept apart from `cleanup`, which holds document-level handlers
+   * that must survive a re-render. */
+  private pageCleanup: (() => void)[] = [];
+  private observer: IntersectionObserver | null = null;
 
   /** The shell owns the zoom level, so it is passed in rather than
    * defaulted here - otherwise the first zoom click jumps from the
@@ -188,7 +194,7 @@ export class PdfEngine implements Engine {
     view.wrapper.addEventListener("pointerdown", down);
     view.wrapper.addEventListener("pointermove", move);
     view.wrapper.addEventListener("pointerup", up);
-    this.cleanup.push(() => {
+    this.pageCleanup.push(() => {
       view.wrapper.removeEventListener("pointerdown", down);
       view.wrapper.removeEventListener("pointermove", move);
       view.wrapper.removeEventListener("pointerup", up);
@@ -282,25 +288,34 @@ export class PdfEngine implements Engine {
   }
 
   private watchScroll(): void {
-    const observer = new IntersectionObserver((entries) => {
+    this.observer?.disconnect();
+    this.observer = new IntersectionObserver((entries) => {
       for (const entry of entries) {
         if (entry.isIntersecting) {
           this.current = Number((entry.target as HTMLElement).dataset.page);
         }
       }
     }, { threshold: 0.5 });
-    for (const view of this.views.values()) observer.observe(view.wrapper);
-    this.cleanup.push(() => observer.disconnect());
+    for (const view of this.views.values()) this.observer.observe(view.wrapper);
   }
 
   async setScale(scale: number): Promise<void> {
     this.scale = scale;
+    this.teardownPages();
     this.host!.replaceChildren();
-    this.views.clear();
     for (let num = 1; num <= (this.doc?.numPages ?? 0); num++) {
       await this.renderPage(num);
     }
+    this.watchScroll();
     this.paint(this.annotations);
+  }
+
+  private teardownPages(): void {
+    this.observer?.disconnect();
+    this.observer = null;
+    for (const fn of this.pageCleanup) fn();
+    this.pageCleanup = [];
+    this.views.clear();
   }
 
   onTextSelect(cb: (a: Anchor, t: string) => void): void {
@@ -314,7 +329,7 @@ export class PdfEngine implements Engine {
   destroy(): void {
     for (const fn of this.cleanup) fn();
     this.cleanup = [];
-    this.views.clear();
+    this.teardownPages();
     // pdfjs-dist 6.3 has no PDFDocumentProxy.destroy(); the loading task
     // owns teardown of the document and its worker.
     void this.doc?.loadingTask.destroy();
