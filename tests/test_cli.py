@@ -272,3 +272,21 @@ def test_db_close_is_idempotent(tmp_path):
     db.close()
     db.close()
     assert not (tmp_path / ".lock").exists()
+
+
+def test_covers_backfills_books_extracted_without_one(tmp_path):
+    from reshelf.covers import has_cover
+    from tests.helpers import make_pdf
+
+    root = _init_root(tmp_path)
+    make_pdf(root / "incoming" / "a.pdf", title="A", author="B")
+    runner.invoke(app, ["scan", "--root", str(root)])
+    runner.invoke(app, ["extract", "--root", str(root)])
+    for f in (root / "covers").rglob("*.jpg"):
+        f.unlink()
+
+    r = runner.invoke(app, ["covers", "--root", str(root)])
+    assert r.exit_code == 0, r.output
+    assert "covers=1 none=0" in r.output
+    sha = next((root / "metadata").glob("*.json")).stem
+    assert has_cover(root / "covers", sha)

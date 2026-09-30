@@ -318,6 +318,25 @@ def reindex(root: Path = ROOT_OPTION) -> None:
     typer.echo(f"indexed={n}")
 
 
+@app.command()
+def covers(root: Path = ROOT_OPTION) -> None:
+    """Extract missing covers for every book (EPUB/PDF files only)."""
+    from reshelf.covers import ensure_cover
+
+    cfg = load_config(root)
+    covers_dir = Path(cfg.library.root) / "covers"
+    library_dir = Path(cfg.library.root) / "library"
+    done = missing = 0
+    for book in SidecarStore(cfg).iter_all():
+        primary = book.primary_file(library_dir)
+        files = [primary] + [f for f in book.files if f is not primary] if primary else []
+        if any(Path(f.path).is_file() and ensure_cover(covers_dir, book.sha256, Path(f.path)) for f in files):
+            done += 1
+        else:
+            missing += 1
+    typer.echo(f"covers={done} none={missing}")
+
+
 def main() -> None:
     """Entry point. One `serve` holds db.lock all day, so every other
     command meeting it is routine - report it instead of a traceback."""
