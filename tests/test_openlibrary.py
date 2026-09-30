@@ -106,3 +106,9 @@ def test_gives_up_after_max_retries():
     )
     with pytest.raises(httpx.HTTPStatusError):
         provider.lookup_isbn("9780765382030")
+
+
+def test_lookup_isbn_404_means_no_result():
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(404)))
+    provider = OpenLibraryProvider(client=client, min_interval=0, backoff=0)
+    assert provider.lookup_isbn("9788833891149") == []

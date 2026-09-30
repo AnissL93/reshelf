@@ -1,3 +1,5 @@
+import httpx
+
 from reshelf.metadata.models import Author, Candidate, Edition, Work
 from reshelf.metadata.normalization import normalize_language
 from reshelf.providers.base import MetadataProvider
@@ -9,11 +11,16 @@ class OpenLibraryProvider(MetadataProvider):
     name = "openlibrary"
 
     def lookup_isbn(self, isbn: str) -> list[Candidate]:
-        data = self._get(
-            f"isbn:{isbn}",
-            f"{BASE}/api/books",
-            {"bibkeys": f"ISBN:{isbn}", "format": "json", "jscmd": "data"},
-        )
+        try:
+            data = self._get(
+                f"isbn:{isbn}",
+                f"{BASE}/api/books",
+                {"bibkeys": f"ISBN:{isbn}", "format": "json", "jscmd": "data"},
+            )
+        except httpx.HTTPStatusError as e:
+            if e.response is not None and e.response.status_code == 404:
+                return []  # unknown ISBN; Open Library used to answer {} here
+            raise
         rec = (data or {}).get(f"ISBN:{isbn}")
         if not rec:
             return []
