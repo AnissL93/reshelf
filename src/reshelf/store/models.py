@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from reshelf.paths import under
 
@@ -98,28 +98,31 @@ class Book(BaseModel):
     source: Source = Field(default_factory=Source)
     reading: Reading = Field(default_factory=Reading)
     annotations: list[Annotation] = Field(default_factory=list)
+    created_at: str = Field(default_factory=now)
+    updated_at: str = Field(default_factory=now)
 
     @field_validator("annotations", mode="before")
     @classmethod
     def _drop_malformed_annotations(cls, value: object) -> object:
         """Sidecars are hand-editable. A junk entry costs that entry, not
-        the book: strict validation here would raise inside
-        model_validate and 500 the detail page of a book whose metadata
-        is fine."""
+        the book: letting one bad annotation raise here would 500 the
+        detail page of a book whose metadata is fine.
+
+        Validating each entry is the check - a pre-filter on one field
+        only catches the shapes it thought of, and an entry can be a
+        well-formed dict with a plausible id and still be unloadable."""
         if not isinstance(value, list):
             return value
         kept = []
         for item in value:
-            if isinstance(item, Annotation):
-                kept.append(item)
-            elif isinstance(item, dict) and isinstance(item.get("id"), str):
-                kept.append(item)
-            else:
+            try:
+                kept.append(
+                    item if isinstance(item, Annotation)
+                    else Annotation.model_validate(item)
+                )
+            except ValidationError:
                 logger.warning("dropping malformed annotation entry: %r", item)
         return kept
-
-    created_at: str = Field(default_factory=now)
-    updated_at: str = Field(default_factory=now)
 
     @property
     def is_human(self) -> bool:

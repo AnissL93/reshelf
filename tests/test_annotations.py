@@ -23,7 +23,7 @@ def test_annotation_round_trips_through_json():
 
 
 def test_an_unknown_anchor_kind_survives_a_round_trip():
-    """A sidecar written by a future reshelf must not lose data here."""
+    """The `anchor` field is stored verbatim and an unrecognised kind is not interpreted."""
     book = Book.model_validate({
         "sha256": SHA,
         "annotations": [{
@@ -58,6 +58,7 @@ def test_a_malformed_annotation_entry_is_dropped_not_fatal(caplog):
         "annotations": [
             "this is not an object",
             {"no_id": True},
+            {"id": "no-file-sha"},
             {"id": "good", "type": "highlight", "file_sha": SHA, "anchor": {}},
         ],
     })
