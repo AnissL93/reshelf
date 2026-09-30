@@ -19,6 +19,8 @@ type FoliateView = HTMLElement & {
   addAnnotation(a: { value: string }, remove?: boolean): Promise<unknown>;
   deleteAnnotation(a: { value: string }): Promise<unknown>;
   getCFI(index: number, range: Range): string;
+  next(): Promise<void>;
+  prev(): Promise<void>;
   close(): void;
   renderer?: { setStyles?(css: string): void };
 };
@@ -116,6 +118,14 @@ export class EpubEngine implements Engine {
 
   async goTo(anchor: Anchor): Promise<void> {
     if (anchor.kind === "epub") await this.view?.goTo(anchor.cfi);
+  }
+
+  next(): void {
+    void this.view?.next();
+  }
+
+  prev(): void {
+    void this.view?.prev();
   }
 
   /** Reflowable text resizes rather than zooming, so this is the EPUB

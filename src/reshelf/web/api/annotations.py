@@ -15,27 +15,25 @@ from reshelf.web.schemas import AnnotationCreate, AnnotationPatch, ReadingUpdate
 router = APIRouter(tags=["annotations"])
 
 
-def _book_path(state: AppState, sha256: str) -> str:
+def _book_path(state: AppState, sha256: str) -> str | None:
     """The `files.path` a non-hash metadata layout needs to find the
-    sidecar. Mirrors books.py: the row is the only place that mapping
-    lives, and `store.load`/`store.update` need it for layouts other
-    than `hash`."""
+    sidecar. None when there is no row - after a database rebuild `files`
+    is empty (reindex rebuilds only book_index), and the hash layout finds
+    the sidecar without it. Same fallback books.py uses everywhere."""
     with state.db.lock:
         row = state.db.conn.execute(
             "SELECT path FROM files WHERE sha256 = ? ORDER BY id LIMIT 1", (sha256,)
         ).fetchone()
-    if row is None:
-        raise HTTPException(404, "no such book")
-    return row["path"]
+    return row["path"] if row else None
 
 
-def _require_sidecar(state: AppState, sha256: str) -> tuple[str, Book]:
+def _require_sidecar(state: AppState, sha256: str) -> tuple[str | None, Book]:
     path = _book_path(state, sha256)
     book = state.store.load(sha256, path)
     if book is None:
         # Hashed but never extracted. store.update would raise KeyError
         # from under the handler; say what to do about it instead.
-        raise HTTPException(404, "no sidecar for this book yet; run extract first")
+        raise HTTPException(404, "no such book, or no sidecar yet; run extract first")
     return path, book
 
 

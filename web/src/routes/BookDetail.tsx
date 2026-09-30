@@ -17,7 +17,7 @@ import MetadataForm from "../components/MetadataForm";
 import type { SaveOutcome } from "../components/MetadataForm";
 import useCapabilities from "../hooks/useCapabilities";
 import useJob from "../hooks/useJob";
-import { quoted, where } from "../reader/anchors";
+import { compareAnchors, quoted, where } from "../reader/anchors";
 
 const STATUS_CLASS: Record<string, string> = {
   MATCHED: "ok",
@@ -55,7 +55,7 @@ function nonEmptyQuery(q: RematchQuery): Record<string, string> | undefined {
 function AnnotationRows({ items }: { items: Annotation[] }) {
   return (
     <ul>
-      {items.map((a) => (
+      {[...items].sort((x, y) => compareAnchors(x.anchor, y.anchor)).map((a) => (
         <li key={a.id}>
           {a.type === "bookmark" ? "⚑ " : ""}
           <span className="muted">{where(a)}</span> {quoted(a) && <q>{quoted(a)}</q>}{" "}

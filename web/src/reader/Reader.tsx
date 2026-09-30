@@ -233,6 +233,25 @@ export default function Reader() {
     // every page of the PDF each time a note was edited.
   }, [zoom, fontSize]);
 
+  // EPUB page-turning: the vertical wheel does nothing in foliate's paginated
+  // view, so keys and buttons are the only way for a mouse/keyboard user.
+  useEffect(() => {
+    if (fileEngine !== "epub") return;
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target;
+      if (t instanceof HTMLElement && t.closest("input, textarea, select, [contenteditable]")) return;
+      if (e.altKey || e.ctrlKey || e.metaKey) return;
+      const engine = engineRef.current;
+      if (!(engine instanceof EpubEngine)) return;
+      if (e.key === "ArrowRight" || e.key === "PageDown" || (e.key === " " && !e.shiftKey)) engine.next();
+      else if (e.key === "ArrowLeft" || e.key === "PageUp" || (e.key === " " && e.shiftKey)) engine.prev();
+      else return;
+      e.preventDefault();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [fileEngine]);
+
   if (error) {
     return (
       <div className="reader-notice error">
@@ -284,6 +303,16 @@ export default function Reader() {
               >
                 Area
               </button>
+            )}
+            {file.engine === "epub" && (
+              <span className="sizing">
+                <button disabled={!ready} aria-label="Previous page" onClick={() => { const e = engineRef.current; if (e instanceof EpubEngine) e.prev(); }}>
+                  &lsaquo; Prev
+                </button>
+                <button disabled={!ready} aria-label="Next page" onClick={() => { const e = engineRef.current; if (e instanceof EpubEngine) e.next(); }}>
+                  Next &rsaquo;
+                </button>
+              </span>
             )}
             {file.engine === "pdf" ? (
               <span className="sizing">

@@ -94,7 +94,18 @@ export class PdfEngine implements Engine {
     host.classList.add("pdf-host");
     // Range requests are the point of A's file endpoint: a 200MB scan
     // must not be downloaded whole before the first page shows.
-    const task = pdfjs.getDocument({ url: fileUrl, rangeChunkSize: 1 << 18 });
+    const task = pdfjs.getDocument({
+      url: fileUrl,
+      rangeChunkSize: 1 << 16,
+      // Without this pdf.js prefetches the whole file in the background.
+      disableAutoFetch: true,
+      // Streaming keeps the initial no-Range request open for the whole file.
+      disableStream: true,
+      // pdfjs-dist 6 decodes JBIG2 (bitonal scans) and JPEG2000 in wasm and
+      // fails to blank pages without it. Copied into public/ by the
+      // predev/prebuild scripts.
+      wasmUrl: `${import.meta.env.BASE_URL}pdfjs-wasm/`,
+    });
     this.task = task;
     let doc: PDFDocumentProxy;
     try {

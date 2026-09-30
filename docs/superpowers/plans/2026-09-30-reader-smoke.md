@@ -49,3 +49,12 @@ checklist writes annotations and those land in sidecars.
 - The server has no SPA fallback: `GET /read/<sha>`, `/book/<sha>`, `/jobs` ... return 404 JSON on a direct
   load or F5. Rows involving "reload" load `/` and navigate client-side instead.
 - Rows 19 and 20 stopped/restarted the scratch server. Full narrative: `.superpowers/sdd/2026-09-30-web-app-b-reader/task-12-report.md`.
+
+## Re-run of the failed rows (2026-09-30, after fixes)
+
+| # | Result | Note |
+|---|---|---|
+| 2 | PASS | `wasmUrl` set; page 20 of the scanned PDF renders (8.7% dark pixels, was all-white). |
+| 3 | PASS | `disableAutoFetch` + `disableStream`: 23.7 MB of 707 MB transferred after 10 s idle. |
+| 19 | PASS | `rm db/books.sqlite3* && reshelf reindex` (files table: 0 rows): book page lists 6 annotations, reader shows them; endpoints fall back to the sidecar. |
+| 22 | PASS | Deep links (`/read/<sha>`, `/jobs`) now 200 via SPA fallback; no JBIG2 errors. Only an expected ERR_ABORTED on navigation. |
