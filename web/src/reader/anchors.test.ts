@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { denormalizeRect, mergeRects, normalizeRect } from "./anchors";
+import { compareAnchors, denormalizeRect, mergeRects, normalizeRect } from "./anchors";
 import type { NormRect, PageBox } from "./engines/types";
 
 const A4: PageBox = { width: 600, height: 800, rotation: 0 };
@@ -97,5 +97,41 @@ describe("mergeRects", () => {
     const snapshot = structuredClone(rects);
     mergeRects(rects);
     expect(rects).toEqual(snapshot);
+  });
+});
+
+describe("compareAnchors", () => {
+  const sort = (xs: Parameters<typeof compareAnchors>[0][]) => [...xs].sort(compareAnchors);
+  const text = (page: number, y: number, y2 = y + 0.1) =>
+    ({ kind: "pdf-text", page, text: "t", rects: [[0, y2, 1, 0.01], [0, y, 1, 0.01]] }) as const;
+
+  it("orders pdf by page, then vertical position", () => {
+    const area = { kind: "pdf-area", page: 2, rect: [0, 0.5, 0.1, 0.1] } as const;
+    const bookmark = { kind: "pdf-page", page: 2 } as const;
+    const late = { kind: "pdf-page", page: 10 } as const;
+    expect(sort([late, area, text(2, 0.2), bookmark, text(1, 0.9)]))
+      .toEqual([text(1, 0.9), bookmark, text(2, 0.2), area, late]);
+  });
+
+  it("uses the smallest rect y for pdf-text", () => {
+    expect(compareAnchors(text(1, 0.1, 0.9), text(1, 0.3))).toBeLessThan(0);
+  });
+
+  it("orders epub by CFI, not by string", () => {
+    const at = (cfi: string) => ({ kind: "epub", cfi }) as const;
+    // "/10" < "/4" as strings, but chapter 4 comes first.
+    expect(compareAnchors(at("epubcfi(/6/4!/4/2)"), at("epubcfi(/6/10!/4/2)"))).toBeLessThan(0);
+    expect(compareAnchors(at("epubcfi(/6/4!/4/2/1:5)"), at("epubcfi(/6/4!/4/2/1:20)"))).toBeLessThan(0);
+  });
+
+  it("returns 0 across families and does not throw on a malformed cfi", () => {
+    expect(compareAnchors({ kind: "pdf-page", page: 1 }, { kind: "epub", cfi: "epubcfi(/6/2)" })).toBe(0);
+    expect(() => compareAnchors({ kind: "epub", cfi: "garbage" }, { kind: "epub", cfi: "epubcfi(/6/2)" })).not.toThrow();
+  });
+
+  it("sorts an unknown kind last without throwing", () => {
+    const future = { kind: "pdf-ink", page: 1 };
+    expect(sort([future, { kind: "pdf-page", page: 99 }])[1]).toBe(future);
+    expect(compareAnchors(future, { kind: "other" })).toBe(0);
   });
 });

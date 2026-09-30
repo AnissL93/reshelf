@@ -1,6 +1,8 @@
 // Pure geometry for anchors. No DOM, no engine imports - this is the
 // module that gets tested, so everything that can live here does.
-import type { NormRect, PageBox, PixelRect } from "./engines/types";
+// @ts-expect-error - vendored plain ESM, no type declarations upstream.
+import { compare as compareCfi } from "../../vendor/foliate-js/epubcfi.js";
+import type { Anchor, NormRect, PageBox, PixelRect } from "./engines/types";
 
 const clamp = (n: number, max: number) => Math.min(max, Math.max(0, n));
 
@@ -67,4 +69,37 @@ export function mergeRects(rects: NormRect[]): NormRect[] {
     }
   }
   return out;
+}
+
+type AnyAnchor = Anchor | { kind: string; [k: string]: unknown };
+
+/** [family, page, y] for a known anchor; null for a kind this build does
+ * not know (a sidecar from a future version). */
+function pdfKey(a: Anchor): [number, number] | null {
+  switch (a.kind) {
+    case "pdf-page": return [a.page, 0]; // top of its page
+    case "pdf-area": return [a.page, a.rect[1]];
+    case "pdf-text": return [a.page, Math.min(...a.rects.map((r) => r[1]))];
+    default: return null;
+  }
+}
+
+/** Reading order. Unknown kinds sort last; a pdf-* against an epub is
+ * unorderable (annotations are bound to one file) and returns 0. */
+export function compareAnchors(a: AnyAnchor, b: AnyAnchor): number {
+  const known = (x: AnyAnchor) => x.kind === "epub" || pdfKey(x as Anchor) !== null;
+  const ka = known(a), kb = known(b);
+  if (!ka || !kb) return Number(!ka) - Number(!kb);
+
+  if (a.kind === "epub" || b.kind === "epub") {
+    if (a.kind !== b.kind) return 0;
+    try {
+      return compareCfi((a as Anchor & { kind: "epub" }).cfi, (b as Anchor & { kind: "epub" }).cfi);
+    } catch {
+      return 0; // malformed CFI: keep it, do not crash the list
+    }
+  }
+  const [pa, ya] = pdfKey(a as Anchor)!;
+  const [pb, yb] = pdfKey(b as Anchor)!;
+  return pa - pb || ya - yb;
 }
