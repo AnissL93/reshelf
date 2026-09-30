@@ -37,6 +37,11 @@ export default function Reader() {
   // One control, two meanings: a PDF zooms, reflowable EPUB text resizes.
   const [zoom, setZoom] = useState(1.4);
   const [fontSize, setFontSize] = useState(16);
+  // True only once the engine has mounted AND the saved position has been
+  // restored. Until then engine.locate() reports a default position (page 1,
+  // or nothing), which must never be written over the user's saved one.
+  const [ready, setReady] = useState(false);
+  const readyRef = useRef(false);
 
   const hostRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<Engine | null>(null);
@@ -70,9 +75,8 @@ export default function Reader() {
     if (!fileEngine) return;
     const tick = () => {
       const engine = engineRef.current;
-      if (!engine) return;
+      if (!engine || !readyRef.current) return;
       const loc = engine.locate();
-      if (!loc.locator) return; // not mounted yet: never overwrite with blank
       const now = Date.now();
       if (now - lastWrite.current < PROGRESS_MS) return;
       lastWrite.current = now;
@@ -85,8 +89,9 @@ export default function Reader() {
       const engine = engineRef.current;
       // fetch() is cancelled on unload; sendBeacon is the only delivery
       // the browser guarantees.
-      const loc = engine?.locate();
-      if (loc?.locator) beaconReading(sha, loc);
+      if (!engine || !readyRef.current) return;
+      const loc = engine.locate();
+      if (loc.locator) beaconReading(sha, loc);
     };
     window.addEventListener("pagehide", onLeave);
     return () => {
@@ -104,6 +109,7 @@ export default function Reader() {
       fileEngine === "pdf" ? new PdfEngine(zoomRef.current) : new EpubEngine();
     if (engine instanceof EpubEngine) engine.setFontSize(sizeRef.current);
     engineRef.current = engine;
+    readyRef.current = false;
     let cancelled = false;
 
     engine
@@ -112,14 +118,28 @@ export default function Reader() {
         if (cancelled) return;
         // After mount: the EPUB engine always opens at the start of the
         // text, so the saved position can only be applied once it resolves.
-        if (stored) {
-          await engine.goTo(
-            fileEngine === "pdf"
-              ? { kind: "pdf-page", page: Number(stored.replace("page=", "")) || 1 }
-              : { kind: "epub", cfi: stored },
-          );
+        // Position is stored per book, not per file, so it may have been
+        // written by the other engine. Restore only a locator of this
+        // engine's shape, and never let a failed restore look like a
+        // failed mount.
+        const target: Anchor | null =
+          fileEngine === "pdf"
+            ? stored && /^page=\d+$/.test(stored)
+              ? { kind: "pdf-page", page: Number(stored.slice(5)) || 1 }
+              : null
+            : stored?.includes("epubcfi(")
+              ? { kind: "epub", cfi: stored }
+              : null;
+        if (target) {
+          try {
+            await engine.goTo(target);
+          } catch (e) {
+            console.error("reader: could not restore position", e);
+          }
         }
         if (cancelled) return;
+        readyRef.current = true;
+        setReady(true);
         if (engine instanceof PdfEngine) engine.setAreaMode(areaRef.current);
         // Annotations may have loaded before the engine was ready.
         engine.paint(annRef.current);
@@ -132,6 +152,11 @@ export default function Reader() {
 
     return () => {
       cancelled = true;
+      readyRef.current = false;
+      setReady(false);
+      // The next engine starts with area mode off; keep the state in step.
+      areaRef.current = false;
+      setAreaMode(false);
       engine.destroy();
       engineRef.current = null;
     };
@@ -176,7 +201,7 @@ export default function Reader() {
     if (engine instanceof PdfEngine) {
       // Re-renders every page, so a change only: the constructor already
       // took the initial zoom. Repaint after, setScale drops the overlays.
-      void engine.setScale(zoom).then(() => engine.paint(annRef.current)).catch(() => {});
+      void engine.setScale(zoom).then(() => engine.paint(annRef.current)).catch((e) => console.error("reader: zoom failed", e));
     } else if (engine instanceof EpubEngine) {
       engine.setFontSize(fontSize);
     }
@@ -239,11 +264,11 @@ export default function Reader() {
             )}
             {file.engine === "pdf" ? (
               <span className="sizing">
-                <button onClick={() => setZoom((z) => Math.max(0.5, z - 0.2))}>
+                <button disabled={!ready} onClick={() => setZoom((z) => Math.max(0.5, z - 0.2))}>
                   &minus;
                 </button>
                 <span>{Math.round(zoom * 100)}%</span>
-                <button onClick={() => setZoom((z) => Math.min(4, z + 0.2))}>
+                <button disabled={!ready} onClick={() => setZoom((z) => Math.min(4, z + 0.2))}>
                   +
                 </button>
               </span>
@@ -283,7 +308,12 @@ export default function Reader() {
         {file.engine ? (
           <div className="reader-host" ref={hostRef} />
         ) : (
-          <ConvertToRead sha={sha} file={file} onDone={reload} />
+          <ConvertToRead sha={sha} file={file} onDone={() => {
+            // pick() honours ?file_sha, which may name the file just converted
+            // away from; clear it so the new readable file is chosen.
+            setParams({});
+            void reload();
+          }} />
         )}
         <Sidebar
           annotations={annotations}

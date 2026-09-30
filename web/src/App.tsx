@@ -1,4 +1,4 @@
-import { NavLink, Route, Routes } from "react-router-dom";
+import { NavLink, Route, Routes, useParams } from "react-router-dom";
 import Library from "./routes/Library";
 import BookDetailPage from "./routes/BookDetail";
 import Review from "./routes/Review";
@@ -6,6 +6,12 @@ import Jobs from "./routes/Jobs";
 import Settings from "./routes/Settings";
 import Reader from "./reader/Reader";
 import JobStatusBar from "./components/JobStatusBar";
+
+// key on the sha: /read/:a -> /read/:b must not reuse the previous book state.
+function ReaderRoute() {
+  const { sha } = useParams();
+  return <Reader key={sha} />;
+}
 
 export default function App() {
   return (
@@ -21,7 +27,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Library />} />
           <Route path="/book/:sha" element={<BookDetailPage />} />
-          <Route path="/read/:sha" element={<Reader />} />
+          <Route path="/read/:sha" element={<ReaderRoute />} />
           <Route path="/review" element={<Review />} />
           <Route path="/jobs" element={<Jobs />} />
           <Route path="/settings" element={<Settings />} />

@@ -483,5 +483,6 @@ export class PdfEngine implements Engine {
     this.task = null;
     this.doc = null;
     this.host?.replaceChildren();
+    this.host?.classList.remove("area-mode", "pdf-host");
   }
 }
