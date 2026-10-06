@@ -1,8 +1,11 @@
 # reshelf
 
-Organize large collections of EPUB/PDF ebooks: scan, extract metadata,
-match against Open Library, detect duplicates, and produce a reviewable
-organization plan — without ever modifying your original files.
+Organize large collections of ebooks (EPUB, PDF, MOBI/AZW3, TXT, DjVu):
+scan, extract metadata, match against Douban and Open Library, detect
+duplicates, and produce a reviewable organization plan — without ever
+modifying your original files. A local web app lets you browse the
+library, fix metadata, run the pipeline, and read books with highlights
+and notes.
 
 See `spec.md` for the full specification. Pipeline: scan → extract →
 match (Douban + Open Library) → AI resolve → report → plan → commit,
@@ -11,12 +14,17 @@ into `library/`; moves are opt-in flags) and `rollback` (undoes a commit).
 
 ## Install
 
-Requires Python ≥ 3.11.
+Requires Python ≥ 3.11, plus Node.js for building the web UI.
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
+(cd web && npm install && npm run build)   # only needed for `reshelf serve`
 ```
+
+Optional: `ddjvu` (Debian/Ubuntu: `djvulibre-bin`) to read DjVu files,
+which are converted to PDF. MOBI/AZW3/TXT conversion to EPUB needs no
+external tools.
 
 The `reshelf` command is then available at `.venv/bin/reshelf`
 (or on PATH with the venv activated).
@@ -69,11 +77,15 @@ Reads embedded metadata (EPUB OPF; PDF info plus an ISBN scan of the first
 
 ```bash
 reshelf match --root /mnt/data/Books
-reshelf match --root /mnt/data/Books --offline   # local cache only, no network
+reshelf match --root /mnt/data/Books --offline            # local cache only, no network
+reshelf match --root /mnt/data/Books --retry-unresolved   # also re-match UNRESOLVED files
 ```
 
 Looks up each identified file by ISBN, falling back to title/author
-search, then scores candidates deterministically (spec §14). Books with
+search. When embedded metadata is missing or junk (placeholder titles,
+uploader account names as authors), the author and a clean title are
+taken from the filename instead; multi-volume titles are also searched
+by series name and by title without its subtitle. Candidates are scored candidates deterministically (spec §14). Books with
 Chinese titles/authors query Douban first, everything else Open Library
 first. Every match stores its score, confidence, and evidence. Results
 land in confidence bands: exact-ISBN and high-confidence matches become
@@ -88,8 +100,9 @@ reshelf resolve --root /mnt/data/Books --limit 20            # sample first
 reshelf resolve --root /mnt/data/Books --include-unresolved  # also retry UNRESOLVED
 ```
 
-Asks Claude (via the `claude` CLI — uses your Claude Code subscription, no
-API key needed) to judge books the deterministic matcher left in REVIEW:
+Requires `ai.provider` in config.yaml (off by default): `claude-cli` uses
+the `claude` CLI and your Claude Code subscription; `api` calls the API
+with `ai.api_key` or `RESHELF_AI_API_KEY`. Asks Claude to judge books the deterministic matcher left in REVIEW:
 translated titles, transliterated authors, marketing-subtitle noise. The
 AI only picks among real provider candidates — it can never invent ISBNs
 or metadata — its confidence is capped below auto-accept, and its
@@ -157,7 +170,16 @@ Undoes a commit using its journal: deletes the copies it made (cleaning
 up empty directories) and restores any quarantine/duplicate moves. The
 `<commit-id>` is in the journal filename and in commit's output.
 
-### 10. Export to Calibre
+### 10. Covers
+
+```bash
+reshelf covers --root /mnt/data/Books
+```
+
+Extracts missing cover images into `covers/` for every EPUB/PDF book.
+New books get covers during extract; this backfills older ones.
+
+### 11. Export to Calibre
 
 ```bash
 reshelf calibre-export --root /mnt/data/Books --library "/path/to/Calibre Library" --dry-run
@@ -185,6 +207,15 @@ Runs a browser UI over the same library the CLI operates on -- library
 browsing, a keyboard-driven review queue, metadata editing, and a Jobs
 page that drives the whole pipeline (scan/extract/match/resolve/plan/
 reindex, plus the gated commit/rollback below) with live progress.
+
+Books open in an in-browser reader: pdf.js for PDF (and DjVu, via its
+PDF conversion), foliate-js for EPUB (and MOBI/AZW3/TXT, via their EPUB
+conversion). Highlights, notes, bookmarks and reading progress are saved
+into the book's sidecar. Metadata edits can optionally be written back
+by renaming the library copy and/or embedding into the file itself.
+
+For frontend development, `cd web && npm run dev` starts Vite on
+port 5173 and proxies `/api` to a running `reshelf serve`.
 
 By default it binds to `127.0.0.1:8080`, i.e. this machine only.
 **There is no authentication** -- anyone who can reach that address and
@@ -220,6 +251,17 @@ the same way as the CLI, inside your own venv.
 `config.yaml` in the library root (created by `init`). Notable settings:
 
 ```yaml
+library:
+  commit_mode: copy    # `move` is an explicit opt-in
+metadata:
+  layout: hash         # where per-book JSON sidecars live (hash | sidecar | library)
+  dir: metadata
+web:
+  host: 127.0.0.1      # no auth -- keep it local
+  port: 8080
+write_back:            # defaults for the metadata editor
+  library_file: false  # rename the library copy after edits
+  embed: false         # write metadata into the file itself
 matching:            # confidence bands, see spec §15
   auto_accept: 0.98
   review_below: 0.9
@@ -231,8 +273,9 @@ scan:
 cache:
   ttl_days: 30
 ai:
-  enabled: true
-  model: haiku         # any `claude --model` value: haiku, sonnet, opus
+  provider: null       # claude-cli | api; null disables AI everywhere
+  model: haiku         # haiku, sonnet, opus
+  api_key: null        # for provider: api (or set RESHELF_AI_API_KEY)
   timeout_seconds: 180
 providers:
   douban:
@@ -246,8 +289,10 @@ Only one `reshelf` process may run against a library at a time
 ## Development
 
 ```bash
-.venv/bin/pytest        # run the test suite
+.venv/bin/pytest                # backend tests
+(cd web && npm test)            # frontend tests (vitest)
 ```
 
-Planned next (spec Phase 2): review TUI, metadata write-back, Calibre
-import, and additional metadata providers (Google Books, Crossref).
+Design docs live in `docs/superpowers/` (specs and plans per sub-project).
+Done: A (library web app) and B (reader and annotations). Planned next:
+C — Obsidian export of annotations and Docker packaging.
